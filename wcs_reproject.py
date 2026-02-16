@@ -127,6 +127,8 @@ def reproject_to_frame(
     method: str = "interp",
     order: int = 1,
     keep_grid: bool = True,
+    update_world_coords: bool = True,
+    keep_input_world_coords: bool = False,
 ) -> xr.Dataset | xr.DataArray:
     """
     Reproject `source` to a new sky frame.
@@ -150,6 +152,14 @@ def reproject_to_frame(
         If True, keep the existing pixel grid (coords for dim_a/dim_b). If False,
         build a same-sized grid with the same pixel size but centered in the
         target frame.
+    update_world_coords
+        If True, regenerate 2D world-coordinate axes from the output WCS so they
+        match the requested frame, but only when input world-coordinate axes are
+        present.
+    keep_input_world_coords
+        If True and `update_world_coords=True`, preserve original world-coordinate
+        axes under `input_*` names (for example `input_right_ascension`) before
+        writing frame-consistent output coordinates.
 
     Returns
     -------
@@ -163,6 +173,9 @@ def reproject_to_frame(
     _require_optional_deps()
 
     src = _get_dataarray(source, data_var)
+    input_has_world_coords = any(
+        name in src.coords for name in _known_world_coord_names()
+    )
     src_wcs = _build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
 
     ref_dir = _transform_reference_direction(src, frame)
@@ -201,7 +214,7 @@ def reproject_to_frame(
         order=order,
     )
 
-    return _attach_metadata(
+    result = _attach_metadata(
         source,
         None,
         out,
@@ -209,6 +222,18 @@ def reproject_to_frame(
         frame_override=frame,
         ref_dir_override=ref_dir,
     )
+    if update_world_coords and input_has_world_coords:
+        result = _replace_world_coords(
+            result,
+            wcs=tgt_wcs.wcs,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            frame=frame,
+            keep_input=keep_input_world_coords,
+        )
+    if isinstance(result, xr.Dataset):
+        result = _rotate_beam_pas_for_frame_change(source, result, frame=frame)
+    return result
 
 
 def _require_optional_deps() -> None:
@@ -244,6 +269,126 @@ def _flatten_group_var_names(value) -> list[str]:
             names.extend(_flatten_group_var_names(item))
         return names
     return []
+
+
+def _pa_basis_rotation_rad(
+    *,
+    ref_lon_rad: float,
+    ref_lat_rad: float,
+    src_frame: str,
+    tgt_frame: str,
+) -> float:
+    """Compute local PA rotation from source frame north to target-frame basis."""
+    # Small angular step to define local north direction in source frame.
+    eps = 1e-7
+    lat2 = np.clip(ref_lat_rad + eps, -np.pi / 2 + 1e-10, np.pi / 2 - 1e-10)
+    center_src = SkyCoord(ref_lon_rad * u.rad, ref_lat_rad * u.rad, frame=src_frame)
+    north_src = SkyCoord(ref_lon_rad * u.rad, lat2 * u.rad, frame=src_frame)
+    center_tgt = center_src.transform_to(tgt_frame)
+    north_tgt = north_src.transform_to(tgt_frame)
+    return float(center_tgt.position_angle(north_tgt).to_value(u.rad))
+
+
+def _rotate_beam_pas_for_frame_change(
+    source: xr.Dataset | xr.DataArray, out: xr.Dataset, *, frame: str
+) -> xr.Dataset:
+    """Rotate beam position angles to match frame-changed image orientation."""
+    if not isinstance(source, xr.Dataset):
+        return out
+
+    src_csi = source.attrs.get("coordinate_system_info", {})
+    src_ref = src_csi.get("reference_direction", {})
+    src_attrs = src_ref.get("attrs", {})
+    src_frame = src_attrs.get("frame", "icrs")
+    src_vals = src_ref.get("data", [0.0, 0.0])
+    if src_frame.lower() == frame.lower():
+        return out
+
+    rotation = _pa_basis_rotation_rad(
+        ref_lon_rad=float(src_vals[0]),
+        ref_lat_rad=float(src_vals[1]),
+        src_frame=src_frame,
+        tgt_frame=frame,
+    )
+
+    for name in list(out.data_vars):
+        if not name.startswith("BEAM_FIT_PARAMS_"):
+            continue
+        beam = out[name]
+        if (
+            "beam_params_label" not in beam.dims
+            or "beam_params_label" not in beam.coords
+        ):
+            continue
+        labels = beam.coords["beam_params_label"].values
+        pa_idx = np.where(labels == "pa")[0]
+        if pa_idx.size == 0:
+            continue
+
+        pa_sel = int(pa_idx[0])
+        updated = beam.copy(deep=True)
+        updated_vals = np.asarray(updated.values)
+        updated_vals[..., pa_sel] = updated_vals[..., pa_sel] + rotation
+        updated.values = updated_vals
+        out[name] = updated
+
+    return out
+
+
+def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
+    frame_lower = frame.lower()
+    if frame_lower in {"galactic", "gal"}:
+        return "galactic_longitude", "galactic_latitude"
+    return "right_ascension", "declination"
+
+
+def _known_world_coord_names() -> tuple[str, ...]:
+    return (
+        "right_ascension",
+        "declination",
+        "galactic_longitude",
+        "galactic_latitude",
+    )
+
+
+def _compute_world_coords_from_wcs(
+    wcs: WCS, *, n_a: int, n_b: int
+) -> tuple[np.ndarray, np.ndarray]:
+    idx_a, idx_b = np.indices((n_a, n_b))
+    lon_deg, lat_deg = wcs.wcs_pix2world(idx_a, idx_b, 0)
+    return np.deg2rad(lon_deg), np.deg2rad(lat_deg)
+
+
+def _replace_world_coords(
+    obj: xr.Dataset | xr.DataArray,
+    *,
+    wcs: WCS,
+    dim_a: str,
+    dim_b: str,
+    frame: str,
+    keep_input: bool,
+) -> xr.Dataset | xr.DataArray:
+    lon_name, lat_name = _world_coord_names_for_frame(frame)
+    existing_world = [name for name in _known_world_coord_names() if name in obj.coords]
+
+    if keep_input:
+        for name in existing_world:
+            input_name = f"input_{name}"
+            if input_name not in obj.coords:
+                obj = obj.assign_coords({input_name: obj.coords[name]})
+    if existing_world:
+        obj = obj.drop_vars(existing_world)
+
+    n_a = obj.sizes[dim_a]
+    n_b = obj.sizes[dim_b]
+    lon_rad, lat_rad = _compute_world_coords_from_wcs(wcs, n_a=n_a, n_b=n_b)
+    obj = obj.assign_coords(
+        {
+            lon_name: ((dim_a, dim_b), lon_rad),
+            lat_name: ((dim_a, dim_b), lat_rad),
+        }
+    )
+    return obj
 
 
 def _resolve_data_group_vars(ds: xr.Dataset, data_group: str) -> list[str]:
