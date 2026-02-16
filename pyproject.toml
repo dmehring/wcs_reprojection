@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wcs-reprojection"
+version = "0.1.0"
+description = "WCS-aware reprojection helpers for XRADIO image data"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "xarray",
+  "dask",
+  "astropy",
+  "reproject",
+]
+
+[project.optional-dependencies]
+notebook = [
+  "jupyterlab",
+  "ipykernel",
+  "matplotlib",
+  "xradio",
+  "toolviper>=0.0.12",
+  "s3fs",
+  "casaconfig",
+  "casatools",
+]
+
+[tool.setuptools]
+py-modules = ["wcs_reproject"]
