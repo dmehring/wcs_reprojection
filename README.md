@@ -9,14 +9,20 @@ Lightweight utilities for WCS-aware reprojection of XRADIO image datasets using
 python -m pip install -e .
 ```
 
+## Install (editable, notebook/example dependencies)
+
+```bash
+python -m pip install -e ".[notebook]"
+```
+
 ## Usage (basic)
 
 ```python
-import xarray as xr
+from xradio.image import open_image
 from wcs_reproject import reproject_to_match, reproject_to_frame
 
-src = xr.open_zarr("/path/to/source.zarr")
-tgt = xr.open_zarr("/path/to/target.zarr")
+src = open_image("/path/to/source.zarr")
+tgt = open_image("/path/to/target.zarr")
 
 # Reproject to match target grid/WCS
 out = reproject_to_match(src, tgt)
