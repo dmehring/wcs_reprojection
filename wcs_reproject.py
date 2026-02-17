@@ -126,7 +126,7 @@ def reproject_to_frame(
     dim_b: str = "m",
     method: str = "interp",
     order: int = 1,
-    keep_grid: bool = True,
+    keep_grid: bool = False,
     update_world_coords: bool = True,
     keep_input_world_coords: bool = False,
 ) -> xr.Dataset | xr.DataArray:
@@ -177,6 +177,7 @@ def reproject_to_frame(
         name in src.coords for name in _known_world_coord_names()
     )
     src_wcs = _build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
+    src_frame, src_ref_vals = _get_source_frame_and_ref_dir(src)
 
     ref_dir = _transform_reference_direction(src, frame)
 
@@ -271,6 +272,15 @@ def _flatten_group_var_names(value) -> list[str]:
     return []
 
 
+def _get_source_frame_and_ref_dir(da: xr.DataArray) -> tuple[str, list[float]]:
+    csi = da.attrs.get("coordinate_system_info", {})
+    ref_dir = csi.get("reference_direction", {})
+    ref_attrs = ref_dir.get("attrs", {})
+    frame = ref_attrs.get("frame", "icrs")
+    ref_vals = ref_dir.get("data", [0.0, 0.0])
+    return frame, ref_vals
+
+
 def _pa_basis_rotation_rad(
     *,
     ref_lon_rad: float,
@@ -328,7 +338,10 @@ def _rotate_beam_pas_for_frame_change(
         pa_sel = int(pa_idx[0])
         updated = beam.copy(deep=True)
         updated_vals = np.asarray(updated.values)
-        updated_vals[..., pa_sel] = updated_vals[..., pa_sel] + rotation
+        # Convert frame-basis rotation into beam-PA update (north->east convention).
+        # Empirically for FK5->Galactic in this pipeline, PA follows the opposite
+        # sign of the local basis angle returned above.
+        updated_vals[..., pa_sel] = updated_vals[..., pa_sel] - rotation
         updated.values = updated_vals
         out[name] = updated
 
@@ -534,6 +547,16 @@ def _attach_metadata(
     else:
         ds = source.copy(deep=False)
         ds = ds.drop_vars([data_var])
+        # When output grid changes (for example keep_grid=False in frame reprojection),
+        # replace source core-dimension coords before assignment to avoid
+        # reindex-to-source alignment that can fill output data with NaNs.
+        dim_coord_updates = {
+            dim: out.coords[dim]
+            for dim in out.dims
+            if dim in out.coords and dim in ds.dims
+        }
+        if dim_coord_updates:
+            ds = ds.assign_coords(dim_coord_updates)
     ds[data_var] = out
     if target is not None and isinstance(target, xr.Dataset):
         ds.attrs = dict(target.attrs)
@@ -695,19 +718,25 @@ def _reproject_dataarray(
     order: int,
 ) -> xr.DataArray:
     reproject_func = _select_reproject_func(method)
-    shape_out = (coord_a_out.size, coord_b_out.size)
+    shape_out = (coord_b_out.size, coord_a_out.size)
     out_dim_a = f"{dim_a}__out"
     out_dim_b = f"{dim_b}__out"
 
     def _reproject_plane(plane: np.ndarray) -> np.ndarray:
         arr = np.asarray(plane)
+        # Reproject expects array order (y, x). For our (dim_a, dim_b) core
+        # dims, transpose to (dim_b, dim_a) for reprojection, then transpose
+        # back so output keeps (dim_a, dim_b).
+        arr_for_reproject = arr.T
         if method == "interp":
             out, _ = reproject_func(
-                (arr, wcs_in), wcs_out, shape_out=shape_out, order=order
+                (arr_for_reproject, wcs_in), wcs_out, shape_out=shape_out, order=order
             )
         else:
-            out, _ = reproject_func((arr, wcs_in), wcs_out, shape_out=shape_out)
-        return out
+            out, _ = reproject_func(
+                (arr_for_reproject, wcs_in), wcs_out, shape_out=shape_out
+            )
+        return out.T
 
     out = xr.apply_ufunc(
         _reproject_plane,

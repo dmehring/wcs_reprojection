@@ -1,6 +1,33 @@
 # SUMMARY
 
-## 2026-02-16 | Assistant: Codex (GPT-5)
+## 2026-02-17 01:47 | Assistant: Codex (GPT-5)
+
+### Frame Conversion and Axis Handling
+- Fixed reprojection axis-order handling in `wcs_reproject.py` so frame-converted outputs are spatially correct and no longer appear unintentionally unrotated.
+- Confirmed `keep_grid=False` produces Galactic world-coordinate axes aligned with image edges.
+- Preserved robust peak world-position consistency checks for both `keep_grid=False` and `keep_grid=True`.
+
+### Beam PA Sign Correction
+- Corrected beam PA update sign during frame conversion:
+  - Beam `pa` in `BEAM_FIT_PARAMS_*` is now updated with the opposite sign of the local frame-basis angle so PA remains consistent with displayed source orientation.
+- Verified Example 3 now reports negative beam PA delta for FK5 -> Galactic in the shown setup, matching plot convention expectations.
+
+### Example 3 Verification Upgrades
+- Reworked Example 3 notebook checks to use an off-center point source for position/grid tests and a Gaussian source for orientation tests.
+- Added explicit user-facing checks for:
+  - Peak world-position consistency (Astropy-transformed input vs output world coords).
+  - Galactic-grid edge parallelism (`keep_grid=False`) via cross-axis ratios.
+  - Beam/source major-axis PA consistency with sign-aware reporting in plot convention.
+- Updated Example 3 printouts to avoid ambiguous sign interpretation and provide a clear PASS/CHECK summary.
+
+### Regression Tests
+- Added `tests/test_reproject_to_frame_galactic.py` with focused regression coverage:
+  - peak world-position consistency for both keep-grid modes,
+  - Galactic grid parallel-to-edge behavior for `keep_grid=False`,
+  - beam PA change consistency with measured source major-axis rotation.
+- Ran `flake8` clean on touched Python files and reformatted updated test code with `black`.
+
+## 2026-02-16 16:21 | Assistant: Codex (GPT-5)
 
 ### Packaging and Environment
 - Added notebook-focused optional dependencies in `pyproject.toml` for reproducible example runs.
