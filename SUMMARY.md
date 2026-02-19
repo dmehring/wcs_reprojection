@@ -67,3 +67,41 @@
 ### Documentation and Workflow
 - Added and refined `AGENTS.md` with project strategy, coding/testing conventions, and assistant personalization.
 - Updated README install/usage guidance to align with XRADIO-first workflows.
+
+## 2026-02-19 01:00 (approx) | Assistant: Gemini 3 Flash
+
+### Gaussian Generation and Moments
+- **Implemented** a robust `generate_gaussian_xy` function supporting the `data[x, y]` convention.
+- **Enforced** `sigma_a >= sigma_b` to concretely define major vs. minor axes and resolve orientation ambiguity.
+- **Developed** a moment-based analyzer to recover `theta_math` (pixel-space angle) using second-order central moments ($\mu_{20}, \mu_{02}, \mu_{11}$).
+
+### WCS and Parity Handling
+- **Configured** a test WCS using the **PC + CDELT** convention to mirror NRAO/CASA metadata standards.
+- **Handled** **East-Left** parity ($CDELT1 < 0$) by utilizing the determinant of the WCS `pixel_scale_matrix`.
+- **Corrected** the "North" reference vector calculation to use `arctan2(dy, dx)` for the `[x, y]` indexing order, ensuring North ($+Dec$) is correctly identified in pixel space.
+
+### Astronomical Position Angle (PA) Logic
+- **Derived** the final transformation to convert pixel-space `theta_math` to Astronomical PA (North through East).
+- **Refined** the subtraction order to `(north_pixel_angle - theta_math) * parity` to align with the clockwise/counter-clockwise shifts inherent in astronomical projections.
+- **Implemented** the **Radio Astronomy Standard** range shift:
+  - Mapped the standard $[0, 180^\circ)$ PA to the preferred radio range of $(-90^\circ, 90^\circ]$.
+
+### Visualization and Verification
+- **Validated** the `data[x, y]` to `imshow` transition by applying `.T` (transpose) and `origin='lower'` to ensure visual alignment between the array and the WCS coordinate grid.
+- **Created** a verification suite to check cardinal and ordinal directions (North, North-East, East) against expected PA values.
+
+### dmehring note
+- added test implementtaion to notebooks/wcs_reprojection_examples.ipynb for now. should move to
+  notebook of its own.
+
+## 2026-02-19 22:01 UTC | Assistant: Codex (GPT-5)
+
+### WCS Builder Documentation
+- Fully documented `build_wcs_from_xradio` in `wcs_reproject.py` with a complete standards-compliant docstring.
+- Added explicit parameter semantics for:
+  - frame and reference-direction overrides,
+  - supported frame choices and resulting axis-type behavior,
+  - coordinate override handling and expected units.
+- Documented return structure (`_WCSBuildResult`), core invariants/assumptions (radian inputs, degree-based FITS-WCS output, 2D celestial scope), and key failure modes (`KeyError`, `ValueError`, `IndexError`).
+
+
