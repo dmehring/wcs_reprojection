@@ -99,8 +99,8 @@ def reproject_to_match(
         target, data_var=data_var, dim_a=dim_a, dim_b=dim_b
     )
 
-    src_wcs = _build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
-    tgt_wcs = _build_wcs_from_xradio(tgt, dim_a=dim_a, dim_b=dim_b)
+    src_wcs = build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
+    tgt_wcs = build_wcs_from_xradio(tgt, dim_a=dim_a, dim_b=dim_b)
 
     out = _reproject_dataarray(
         src,
@@ -176,13 +176,12 @@ def reproject_to_frame(
     input_has_world_coords = any(
         name in src.coords for name in _known_world_coord_names()
     )
-    src_wcs = _build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
-    src_frame, src_ref_vals = _get_source_frame_and_ref_dir(src)
+    src_wcs = build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
 
     ref_dir = _transform_reference_direction(src, frame)
 
     if keep_grid:
-        tgt_wcs = _build_wcs_from_xradio(
+        tgt_wcs = build_wcs_from_xradio(
             src,
             dim_a=dim_a,
             dim_b=dim_b,
@@ -193,7 +192,7 @@ def reproject_to_frame(
         # Same shape and pixel size, but re-center the reference direction in
         # the target frame.
         coord_a, coord_b = _coords_for_same_pixel_size(src, dim_a=dim_a, dim_b=dim_b)
-        tgt_wcs = _build_wcs_from_xradio(
+        tgt_wcs = build_wcs_from_xradio(
             src,
             dim_a=dim_a,
             dim_b=dim_b,
@@ -270,15 +269,6 @@ def _flatten_group_var_names(value) -> list[str]:
             names.extend(_flatten_group_var_names(item))
         return names
     return []
-
-
-def _get_source_frame_and_ref_dir(da: xr.DataArray) -> tuple[str, list[float]]:
-    csi = da.attrs.get("coordinate_system_info", {})
-    ref_dir = csi.get("reference_direction", {})
-    ref_attrs = ref_dir.get("attrs", {})
-    frame = ref_attrs.get("frame", "icrs")
-    ref_vals = ref_dir.get("data", [0.0, 0.0])
-    return frame, ref_vals
 
 
 def _pa_basis_rotation_rad(
@@ -464,8 +454,8 @@ def _reproject_dataset_group_to_match(
         target, data_var=data_vars[0], dim_a=dim_a, dim_b=dim_b
     )
 
-    src_wcs = _build_wcs_from_xradio(src_ref, dim_a=dim_a, dim_b=dim_b)
-    tgt_wcs = _build_wcs_from_xradio(tgt_ref, dim_a=dim_a, dim_b=dim_b)
+    src_wcs = build_wcs_from_xradio(src_ref, dim_a=dim_a, dim_b=dim_b)
+    tgt_wcs = build_wcs_from_xradio(tgt_ref, dim_a=dim_a, dim_b=dim_b)
 
     out_ds = target.copy(deep=False) if isinstance(target, xr.Dataset) else xr.Dataset()
     for var in data_vars:
@@ -628,8 +618,8 @@ def _coords_for_same_pixel_size(
     return coord_a, coord_b
 
 
-def _build_wcs_from_xradio(
-    da: xr.DataArray,
+def build_wcs_from_xradio(
+    da: xr.Dataset | xr.DataArray,
     *,
     dim_a: str,
     dim_b: str,
@@ -638,6 +628,79 @@ def _build_wcs_from_xradio(
     coord_a: np.ndarray | None = None,
     coord_b: np.ndarray | None = None,
 ) -> _WCSBuildResult:
+    """
+    Build a 2D celestial `astropy.wcs.WCS` from XRADIO-style metadata and axes.
+
+    Parameters
+    ----------
+    da
+        Input `xarray.DataArray` or `xarray.Dataset` containing
+        `attrs["coordinate_system_info"]` in XRADIO style. This metadata is
+        used to read projection, reference direction, optional frame, and
+        optional pixel coordinate transformation (`pc`) matrix.
+    dim_a
+        Name of the first spatial pixel axis in `da` (for example `"l"`).
+        The coordinate values are assumed to be angular offsets in radians and
+        must be monotonic enough to infer a representative pixel spacing from
+        `np.diff`.
+    dim_b
+        Name of the second spatial pixel axis in `da` (for example `"m"`).
+        The coordinate values are assumed to be angular offsets in radians and
+        must be monotonic enough to infer a representative pixel spacing from
+        `np.diff`.
+    frame_override
+        Optional sky-frame override used for output celestial axis types.
+        If `None`, the frame is read from
+        `coordinate_system_info["reference_direction"]["attrs"]["frame"]`
+        and defaults to `"icrs"` when missing.
+        Common values include `"icrs"`, `"fk5"`, and `"galactic"`:
+        `"galactic"`/`"gal"` maps to `GLON/GLAT`; all other values map to
+        `RA/DEC`.
+    ref_dir_override
+        Optional two-element iterable `[lon, lat]` in radians to use as WCS
+        reference direction (`CRVAL`). If `None`, values are read from
+        `coordinate_system_info["reference_direction"]["data"]`, defaulting to
+        `[0.0, 0.0]` when missing.
+    coord_a
+        Optional explicit coordinates for `dim_a` in radians. When provided,
+        these values are used instead of `da[dim_a]` to compute `CDELT1` and
+        `CRPIX1`.
+    coord_b
+        Optional explicit coordinates for `dim_b` in radians. When provided,
+        these values are used instead of `da[dim_b]` to compute `CDELT2` and
+        `CRPIX2`.
+
+    Returns
+    -------
+    _WCSBuildResult
+        Dataclass bundle containing:
+        - `wcs`: constructed 2D celestial `astropy.wcs.WCS`,
+        - `coord_a`: effective `dim_a` coordinate array used for WCS inference,
+        - `coord_b`: effective `dim_b` coordinate array used for WCS inference.
+
+    Notes
+    -----
+    - Input coordinate arrays and reference-direction metadata are interpreted
+      in radians; the produced WCS stores angular quantities in degrees as
+      required by FITS-WCS conventions.
+    - Pixel reference (`CRPIX`) is computed in 0-based index space and then
+      shifted to FITS 1-based convention.
+    - If present, `coordinate_system_info["pixel_coordinate_transformation_matrix"]`
+      is copied directly into `wcs.wcs.pc`.
+    - This helper assumes a 2D celestial WCS and does not encode spectral or
+      Stokes axes.
+
+    Raises
+    ------
+    KeyError
+        If required coordinate variables `dim_a` or `dim_b` are missing from
+        `da` and corresponding `coord_a`/`coord_b` overrides are not provided.
+    ValueError
+        If inferred coordinate spacing for either spatial axis is zero.
+    IndexError
+        If a coordinate array has fewer than two elements, spacing cannot be
+        inferred.
+    """
     csi = da.attrs.get("coordinate_system_info", {})
     projection = csi.get("projection", "SIN")
 
