@@ -1,5 +1,11 @@
 # SUMMARY
 
+## 2026-02-19 22:25 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Cell Extraction
+- Moved the first cell from `notebooks/wcs_reprojection_examples.ipynb` into a new notebook: `notebooks/plot_astro_images_with_matplotlib.ipynb`.
+- Left the source notebook with the remaining cells in original order and preserved notebook metadata/format fields in both files.
+
 ## 2026-02-17 01:47 | Assistant: Codex (GPT-5)
 
 ### Frame Conversion and Axis Handling
@@ -103,5 +109,4 @@
   - supported frame choices and resulting axis-type behavior,
   - coordinate override handling and expected units.
 - Documented return structure (`_WCSBuildResult`), core invariants/assumptions (radian inputs, degree-based FITS-WCS output, 2D celestial scope), and key failure modes (`KeyError`, `ValueError`, `IndexError`).
-
 
