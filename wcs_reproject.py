@@ -346,6 +346,7 @@ def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
 
 
 def _known_world_coord_names() -> tuple[str, ...]:
+    """Return canonical 2D world-coordinate axis names used by this package."""
     return (
         "right_ascension",
         "declination",
@@ -354,9 +355,19 @@ def _known_world_coord_names() -> tuple[str, ...]:
     )
 
 
+def _known_world_coord_alias_names() -> tuple[str, ...]:
+    """Return legacy/input world-coordinate alias names that should be dropped."""
+    aliases: list[str] = []
+    for name in _known_world_coord_names():
+        aliases.append(f"input_{name}")
+        aliases.append(f"{name}_input")
+    return tuple(aliases)
+
+
 def _compute_world_coords_from_wcs(
     wcs: WCS, *, n_a: int, n_b: int
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate world-coordinate longitude/latitude arrays on a full pixel grid."""
     idx_a, idx_b = np.indices((n_a, n_b))
     lon_deg, lat_deg = wcs.wcs_pix2world(idx_a, idx_b, 0)
     return np.deg2rad(lon_deg), np.deg2rad(lat_deg)
@@ -371,8 +382,12 @@ def _replace_world_coords(
     frame: str,
     keep_input: bool,
 ) -> xr.Dataset | xr.DataArray:
+    """Replace canonical world coordinates with arrays computed from `wcs`."""
     lon_name, lat_name = _world_coord_names_for_frame(frame)
     existing_world = [name for name in _known_world_coord_names() if name in obj.coords]
+    existing_aliases = [
+        name for name in _known_world_coord_alias_names() if name in obj.coords
+    ]
 
     if keep_input:
         for name in existing_world:
@@ -381,6 +396,8 @@ def _replace_world_coords(
                 obj = obj.assign_coords({input_name: obj.coords[name]})
     if existing_world:
         obj = obj.drop_vars(existing_world)
+    if existing_aliases:
+        obj = obj.drop_vars(existing_aliases)
 
     n_a = obj.sizes[dim_a]
     n_b = obj.sizes[dim_b]
@@ -524,6 +541,7 @@ def _attach_metadata(
     frame_override: str | None = None,
     ref_dir_override: Iterable[float] | None = None,
 ) -> xr.Dataset | xr.DataArray:
+    """Attach metadata/attrs to reprojection output while preserving dataset context."""
     if isinstance(source, xr.DataArray):
         out.attrs = dict(source.attrs)
         if frame_override:
@@ -547,6 +565,11 @@ def _attach_metadata(
         }
         if dim_coord_updates:
             ds = ds.assign_coords(dim_coord_updates)
+    stale_world_aliases = [
+        name for name in _known_world_coord_alias_names() if name in ds.coords
+    ]
+    if stale_world_aliases:
+        ds = ds.drop_vars(stale_world_aliases)
     ds[data_var] = out
     if target is not None and isinstance(target, xr.Dataset):
         ds.attrs = dict(target.attrs)
@@ -723,6 +746,10 @@ def build_wcs_from_xradio(
     wcs.wcs.cdelt = [np.rad2deg(cdelt_a), np.rad2deg(cdelt_b)]
     wcs.wcs.crpix = [crpix_a + 1.0, crpix_b + 1.0]
     wcs.wcs.crval = [np.rad2deg(ref_vals[0]), np.rad2deg(ref_vals[1])]
+    # Store image shape on the high-level WCS object; Wcsprm does not expose
+    # writable naxis1/naxis2 attributes.
+    wcs.pixel_shape = (int(coord_a.size), int(coord_b.size))
+    wcs.array_shape = (int(coord_b.size), int(coord_a.size))
 
     pc = csi.get("pixel_coordinate_transformation_matrix")
     if pc is not None:

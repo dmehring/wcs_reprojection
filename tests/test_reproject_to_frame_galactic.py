@@ -45,6 +45,18 @@ def _make_point_source_dataset(
     return xds
 
 
+def _add_legacy_input_world_aliases(xds: xr.Dataset) -> xr.Dataset:
+    """Add legacy `*_input` world-coordinate aliases to mimic stale upstream state."""
+    xds = xds.copy(deep=True)
+    xds = xds.assign_coords(
+        {
+            "right_ascension_input": xds["right_ascension"],
+            "declination_input": xds["declination"],
+        }
+    )
+    return xds
+
+
 def _peak_idx(arr: np.ndarray) -> tuple[int, ...]:
     """Return the max-pixel index for arrays with possible NaNs."""
     valid = np.isfinite(arr)
@@ -168,6 +180,15 @@ def test_peak_world_position_consistent_for_keep_grid_modes() -> None:
     assert dlat_false <= pixel_scale_arcsec
     assert dlon_true <= pixel_scale_arcsec
     assert dlat_true <= pixel_scale_arcsec
+
+
+def test_legacy_world_input_alias_coords_are_not_copied_to_output() -> None:
+    """Frame-reprojection output should drop stale world-coordinate alias coords."""
+    src = _add_legacy_input_world_aliases(_make_point_source_dataset())
+    out = reproject_to_frame(src, "galactic", keep_grid=False, method="interp", order=1)
+
+    assert "right_ascension_input" not in out.coords
+    assert "declination_input" not in out.coords
 
 
 def test_keep_grid_false_galactic_axes_parallel_image_edges() -> None:
