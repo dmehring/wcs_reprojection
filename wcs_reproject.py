@@ -122,6 +122,7 @@ def reproject_to_frame(
     frame: str,
     *,
     data_var: str = "SKY",
+    data_group: str | None = "base",
     dim_a: str = "l",
     dim_b: str = "m",
     method: str = "interp",
@@ -138,9 +139,25 @@ def reproject_to_frame(
         XRADIO Dataset or DataArray. For Dataset inputs, `data_var` selects
         the data variable to reproject.
     frame
-        Target sky frame name (e.g. "icrs", "fk5", "galactic").
+        Target sky frame name.
+        Supported strings (case-independent) are:
+        - `"icrs"`
+        - `"fk5"`
+        - `"fk4"`
+        - `"fk4noeterms"`
+        - `"galactic"` (alias: `"gal"`)
+        - `"geocentrictrueecliptic"`
+        - `"geocentricmeanecliptic"`
+        - `"barycentrictrueecliptic"`
+        - `"barycentricmeanecliptic"`
     data_var
         Data variable name for Dataset inputs.
+    data_group
+        Data group name for Dataset inputs (default: `"base"`). If available in
+        `source.attrs["data_groups"]`, all group variables that include both
+        spatial dims are reprojected. If group metadata is missing or cannot be
+        resolved to reprojectable spatial variables, fallback is single-variable
+        mode using `data_var`. Set to `None` to force single-variable mode.
     dim_a, dim_b
         Spatial dimensions (default: l/m).
     method
@@ -177,6 +194,27 @@ def reproject_to_frame(
     are chunked, dask will rechunk them into single blocks.
     """
     _require_optional_deps()
+    frame = frame.lower()
+
+    if isinstance(source, xr.Dataset):
+        try:
+            group_vars = _get_group_spatial_vars(
+                source, data_group=data_group, dim_a=dim_a, dim_b=dim_b
+            )
+        except (KeyError, ValueError):
+            group_vars = None
+        if group_vars is not None:
+            return _reproject_dataset_group_to_frame(
+                source,
+                frame=frame,
+                data_vars=group_vars,
+                dim_a=dim_a,
+                dim_b=dim_b,
+                method=method,
+                order=order,
+                keep_grid=keep_grid,
+                include_original_world_coords=include_original_world_coords,
+            )
 
     src = _get_dataarray(source, data_var)
     src_wcs = build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
@@ -457,8 +495,11 @@ def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
     Parameters
     ----------
     frame
-        Frame selector. `"galactic"` and `"gal"` map to Galactic coordinate
-        names; all other values map to equatorial names.
+        Frame selector. Supported families:
+        - Galactic: `"galactic"`, `"gal"` -> Galactic coordinate names.
+        - Ecliptic (easy, non-observer dependent): geocentric/barycentric true or
+          mean ecliptic frame names -> Ecliptic names.
+        - All other values map to equatorial names.
 
     Returns
     -------
@@ -467,9 +508,41 @@ def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
         frame.
     """
     frame_lower = frame.lower()
-    if frame_lower in {"galactic", "gal"}:
+    family = _frame_family(frame_lower)
+    if family == "galactic":
         return "galactic_longitude", "galactic_latitude"
+    if family == "ecliptic":
+        return "ecliptic_longitude", "ecliptic_latitude"
     return "right_ascension", "declination"
+
+
+def _frame_family(frame: str) -> str:
+    """Return a normalized celestial frame family used for naming/CTYPE mapping.
+
+    Parameters
+    ----------
+    frame
+        Frame selector string, usually from API input or metadata.
+
+    Returns
+    -------
+    str
+        One of:
+        - `"galactic"`
+        - `"ecliptic"` (geocentric/barycentric true/mean variants)
+        - `"equatorial"` (default fallback)
+    """
+    frame_lower = frame.lower()
+    if frame_lower in {"galactic", "gal"}:
+        return "galactic"
+    if frame_lower in {
+        "geocentrictrueecliptic",
+        "geocentricmeanecliptic",
+        "barycentrictrueecliptic",
+        "barycentricmeanecliptic",
+    }:
+        return "ecliptic"
+    return "equatorial"
 
 
 def _reference_frame_from_xradio(obj: xr.DataArray | xr.Dataset) -> str:
@@ -504,6 +577,8 @@ def _known_world_coord_names() -> tuple[str, ...]:
         "declination",
         "galactic_longitude",
         "galactic_latitude",
+        "ecliptic_longitude",
+        "ecliptic_latitude",
     )
 
 
@@ -865,6 +940,135 @@ def _reproject_dataset_group_to_match(
     return out_ds
 
 
+def _reproject_dataset_group_to_frame(
+    source: xr.Dataset,
+    *,
+    frame: str,
+    data_vars: list[str],
+    dim_a: str,
+    dim_b: str,
+    method: str,
+    order: int,
+    keep_grid: bool,
+    include_original_world_coords: bool,
+) -> xr.Dataset:
+    """Reproject all selected group variables in a Dataset to a target frame.
+
+    Parameters
+    ----------
+    source
+        Source Dataset containing variables listed in `data_vars`.
+    frame
+        Target sky frame name, case-normalized by the caller.
+    data_vars
+        Variable names to reproject. Each variable must include both `dim_a` and
+        `dim_b`.
+    dim_a
+        First spatial pixel dimension.
+    dim_b
+        Second spatial pixel dimension.
+    method
+        Reprojection method. Supported choices: `"interp"`, `"exact"`,
+        `"adaptive"`.
+    order
+        Interpolation order for `"interp"` method (`0`, `1`, `3`, etc.).
+    keep_grid
+        If `True`, keep input spatial coordinate arrays. If `False`, rebuild a
+        same-sized centered offset grid with the same pixel spacing.
+    include_original_world_coords
+        If `True`, add transformed `original_*` coordinate arrays on output
+        pixels for the source frame.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with all selected group variables reprojected to `frame`,
+        frame-consistent world coordinates, updated frame metadata, and beam-PA
+        updates when beam metadata variables are present.
+    """
+    src_ref = source[data_vars[0]]
+    src_wcs = build_wcs_from_xradio(src_ref, dim_a=dim_a, dim_b=dim_b)
+    ref_dir = _transform_reference_direction(src_ref, frame)
+
+    if keep_grid:
+        tgt_wcs = build_wcs_from_xradio(
+            src_ref,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            frame_override=frame,
+            ref_dir_override=ref_dir,
+        )
+    else:
+        coord_a, coord_b = _coords_for_same_pixel_size(
+            src_ref, dim_a=dim_a, dim_b=dim_b
+        )
+        tgt_wcs = build_wcs_from_xradio(
+            src_ref,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            frame_override=frame,
+            ref_dir_override=ref_dir,
+            coord_a=coord_a,
+            coord_b=coord_b,
+        )
+
+    out_ds = source.copy(deep=False)
+    dim_coord_updates = {
+        dim_a: (dim_a, tgt_wcs.coord_a),
+        dim_b: (dim_b, tgt_wcs.coord_b),
+    }
+    out_ds = out_ds.assign_coords(dim_coord_updates)
+
+    stale_world_aliases = [
+        name for name in _known_world_coord_alias_names() if name in out_ds.coords
+    ]
+    if stale_world_aliases:
+        out_ds = out_ds.drop_vars(stale_world_aliases)
+
+    for var in data_vars:
+        out_var = _reproject_dataarray(
+            source[var],
+            src_wcs.wcs,
+            tgt_wcs.wcs,
+            tgt_wcs.coord_a,
+            tgt_wcs.coord_b,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            method=method,
+            order=order,
+        )
+        _update_frame_attrs(out_var, frame, ref_dir_override=ref_dir)
+        out_ds[var] = out_var
+
+    out_ds.attrs = dict(source.attrs)
+    if "coordinate_system_info" in out_ds.attrs:
+        out_ds.attrs["coordinate_system_info"] = _update_csi_frame(
+            out_ds.attrs["coordinate_system_info"],
+            frame,
+            source[data_vars[0]],
+            ref_dir_override=ref_dir,
+        )
+
+    out_ds = _replace_world_coords(
+        out_ds,
+        wcs=tgt_wcs.wcs,
+        dim_a=dim_a,
+        dim_b=dim_b,
+        frame=frame,
+    )
+    if include_original_world_coords:
+        src_frame = _reference_frame_from_xradio(src_ref)
+        out_ds = _add_original_world_coords(
+            out_ds,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            from_frame=frame,
+            to_frame=src_frame,
+        )
+    out_ds = _rotate_beam_pas_for_frame_change(source, out_ds, frame=frame)
+    return out_ds
+
+
 def _get_target_grid_dataarray(
     obj: xr.Dataset | xr.DataArray,
     *,
@@ -1156,9 +1360,13 @@ def build_wcs_from_xradio(
         If `None`, the frame is read from
         `coordinate_system_info["reference_direction"]["attrs"]["frame"]`
         and defaults to `"icrs"` when missing.
-        Common values include `"icrs"`, `"fk5"`, and `"galactic"`:
-        `"galactic"`/`"gal"` maps to `GLON/GLAT`; all other values map to
-        `RA/DEC`.
+        Supported strings are case-independent.
+        Common values include `"icrs"`, `"fk5"`, `"fk4"`, `"fk4noeterms"`,
+        `"galactic"` (or `"gal"`), and ecliptic names such as
+        `"geocentrictrueecliptic"`:
+        `"galactic"`/`"gal"` maps to `GLON/GLAT`;
+        `geocentric*ecliptic`/`barycentric*ecliptic` map to `ELON/ELAT`;
+        all other values map to `RA/DEC`.
     ref_dir_override
         Optional two-element iterable `[lon, lat]` in radians to use as WCS
         reference direction (`CRVAL`). If `None`, values are read from
@@ -1280,8 +1488,11 @@ def _frame_to_ctype(frame: str, projection: str) -> Tuple[str, str]:
     Parameters
     ----------
     frame
-        Sky frame selector. `"galactic"`/`"gal"` produce `GLON`/`GLAT`; all
-        other values produce `RA`/`DEC`.
+        Sky frame selector. Supported families:
+        - Galactic (`"galactic"`, `"gal"`) -> `GLON`/`GLAT`
+        - Ecliptic (`geocentric*ecliptic`, `barycentric*ecliptic`) ->
+          `ELON`/`ELAT`
+        - All other values -> `RA`/`DEC`
     projection
         FITS projection suffix such as `"SIN"` or `"TAN"`.
 
@@ -1290,9 +1501,11 @@ def _frame_to_ctype(frame: str, projection: str) -> Tuple[str, str]:
     tuple[str, str]
         `(ctype1, ctype2)` strings ready for assignment to `wcs.wcs.ctype`.
     """
-    frame_lower = frame.lower()
-    if frame_lower in {"galactic", "gal"}:
+    family = _frame_family(frame)
+    if family == "galactic":
         return f"GLON-{projection}", f"GLAT-{projection}"
+    if family == "ecliptic":
+        return f"ELON-{projection}", f"ELAT-{projection}"
     return f"RA---{projection}", f"DEC--{projection}"
 
 

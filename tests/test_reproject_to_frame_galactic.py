@@ -249,6 +249,63 @@ def test_keep_grid_false_galactic_axes_parallel_image_edges() -> None:
     assert cross_ratio_m < 0.01
 
 
+def test_reproject_to_frame_reprojects_all_spatial_vars_in_data_group() -> None:
+    """Group mode should reproject every spatial variable resolved from data_group."""
+    src = _make_point_source_dataset()
+    src["MODEL"] = src["SKY"] * 2.0
+    src.attrs["data_groups"] = {"base": ["SKY", "MODEL"]}
+
+    out_group = reproject_to_frame(
+        src,
+        "galactic",
+        data_group="base",
+        keep_grid=False,
+        method="interp",
+        order=1,
+    )
+    out_model_single = reproject_to_frame(
+        src,
+        "galactic",
+        data_var="MODEL",
+        data_group=None,
+        keep_grid=False,
+        method="interp",
+        order=1,
+    )
+
+    assert "SKY" in out_group.data_vars
+    assert "MODEL" in out_group.data_vars
+    assert "galactic_longitude" in out_group.coords
+    assert "galactic_latitude" in out_group.coords
+    assert out_group["SKY"].shape == out_group["MODEL"].shape
+    np.testing.assert_allclose(
+        out_group["MODEL"].values,
+        out_model_single["MODEL"].values,
+        rtol=0.0,
+        atol=1e-12,
+    )
+
+
+def test_reproject_to_frame_falls_back_to_data_var_when_data_group_missing() -> None:
+    """Missing data_group should fall back to single-variable data_var mode."""
+    src = _make_point_source_dataset()
+    src.attrs["data_groups"] = {"other": ["SKY"]}
+
+    out = reproject_to_frame(
+        src,
+        "galactic",
+        data_var="SKY",
+        data_group="base",
+        keep_grid=False,
+        method="interp",
+        order=1,
+    )
+
+    assert "SKY" in out.data_vars
+    assert "galactic_longitude" in out.coords
+    assert "galactic_latitude" in out.coords
+
+
 def test_beam_pa_change_matches_source_major_axis_rotation() -> None:
     """Beam PA delta should track source-axis rotation for frame conversion."""
     src = _make_point_source_dataset()

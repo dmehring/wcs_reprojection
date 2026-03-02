@@ -177,3 +177,44 @@
 - Removed `update_world_coords` and `keep_input_world_coords` from the `reproject_to_frame` API.
 - Made world-coordinate replacement unconditional in frame reprojection so output world coordinates are always regenerated from the output WCS and target frame.
 - Removed the legacy `keep_input` branch from `_replace_world_coords`; stale canonical/alias world-coordinate arrays are dropped before writing fresh frame-consistent coordinates.
+
+## 2026-03-02 08:23 UTC | Assistant: Codex (GPT-5)
+
+### Added Pixel-Consistent Original-Frame Coordinate Output for `reproject_to_frame`
+- Added new `include_original_world_coords` parameter to `reproject_to_frame`.
+- When enabled, output now includes `original_*` world-coordinate arrays for the source frame (for example `original_right_ascension`, `original_declination`) computed by transforming each output-pixel world coordinate from the target frame back into the original frame.
+- This guarantees one-to-one pixel-wise consistency between target-frame and original-frame coordinate grids on the output image.
+- Added regression coverage to verify transformed original-frame coordinates match Astropy frame transforms at all output pixels within tight tolerance.
+
+## 2026-03-02 22:48 UTC | Assistant: Codex (GPT-5)
+
+### Added Additional Easy Frame Support (Ecliptic Family)
+- Extended frame mapping in `wcs_reproject.py` to support non-observer-dependent ecliptic frame conversions for:
+  - `geocentrictrueecliptic`
+  - `geocentricmeanecliptic`
+  - `barycentrictrueecliptic`
+  - `barycentricmeanecliptic`
+- Added ecliptic coordinate naming support (`ecliptic_longitude`, `ecliptic_latitude`) and WCS CTYPE mapping (`ELON/ELAT`).
+- Kept support focused on easy/non-observer-dependent frame families; supergalactic mapping via WCS CTYPE was not retained due `reproject`/Astropy pixel-to-pixel class mismatch in cross-frame reprojection.
+- Added regression tests to verify ecliptic coordinate emission and pixelwise consistency of `original_*` coordinates when `include_original_world_coords=True`.
+
+## 2026-03-02 23:12 UTC | Assistant: Codex (GPT-5)
+
+### Explicit `reproject_to_frame` Supported Frame List + Case-Insensitive Note
+- Updated `reproject_to_frame` docstring to explicitly enumerate supported `frame` strings:
+  - `icrs`, `fk5`, `fk4`, `fk4noeterms`, `galactic` (`gal`),
+  - `geocentrictrueecliptic`, `geocentricmeanecliptic`,
+  - `barycentrictrueecliptic`, `barycentricmeanecliptic`.
+- Documented that supported frame strings are case-independent.
+- Normalized `frame` to lowercase in `reproject_to_frame` implementation to enforce case-insensitive behavior consistently.
+- Updated `build_wcs_from_xradio` frame-override documentation to note case-insensitive frame handling.
+
+## 2026-03-02 23:23 UTC | Assistant: Codex (GPT-5)
+
+### `reproject_to_frame` Data-Group Support + Fallback to `data_var`
+- Added `data_group` support to `reproject_to_frame`, matching `reproject_to_match` behavior intent for Dataset inputs.
+- Implemented Dataset group-frame reprojection path that reprojects all spatial variables resolved from the selected group to the requested frame.
+- Added explicit fallback behavior: when group metadata is missing or cannot be resolved to reprojectable spatial variables, `reproject_to_frame` now falls back to single-variable mode using `data_var`.
+- Added regression tests validating:
+  - all group spatial variables are reprojected in group mode, and
+  - unresolved/missing group selection falls back to `data_var`.
