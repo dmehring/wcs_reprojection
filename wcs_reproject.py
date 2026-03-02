@@ -127,8 +127,6 @@ def reproject_to_frame(
     method: str = "interp",
     order: int = 1,
     keep_grid: bool = False,
-    update_world_coords: bool = True,
-    keep_input_world_coords: bool = False,
 ) -> xr.Dataset | xr.DataArray:
     """
     Reproject `source` to a new sky frame.
@@ -149,18 +147,17 @@ def reproject_to_frame(
     order
         Interpolation order for "interp" (0=nearest, 1=bilinear, 3=cubic).
     keep_grid
-        If True, keep the existing pixel grid (coords for dim_a/dim_b). If False,
-        build a same-sized grid with the same pixel size but centered in the
-        target frame.
-    update_world_coords
-        If True, regenerate 2D world-coordinate axes from the output WCS so they
-        match the requested frame, but only when input world-coordinate axes are
-        present.
-    keep_input_world_coords
-        If True and `update_world_coords=True`, preserve original world-coordinate
-        axes under `input_*` names (for example `input_right_ascension`) before
-        writing frame-consistent output coordinates.
-
+        Controls whether the output uses the input pixel-coordinate lattice or a
+        newly centered lattice:
+        - If True, reuse the existing pixel grid (coords for `dim_a`/`dim_b`).
+          The transformed output reference direction is still written to metadata
+          and WCS, and remains tied to the `dim_a=0`, `dim_b=0` coordinate
+          location defined by the reused grid.
+        - If False, build a same-sized grid with the same pixel size but centered
+          in offset coordinates, so `dim_a=0` and `dim_b=0` lie at the image
+          midpoint (exact center pixel for odd sizes, midpoint between central
+          pixels for even sizes). In this mode, the transformed output reference
+          direction is associated with that centered `0,0` location.
     Returns
     -------
     Dataset or DataArray
@@ -173,9 +170,6 @@ def reproject_to_frame(
     _require_optional_deps()
 
     src = _get_dataarray(source, data_var)
-    input_has_world_coords = any(
-        name in src.coords for name in _known_world_coord_names()
-    )
     src_wcs = build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
 
     ref_dir = _transform_reference_direction(src, frame)
@@ -222,15 +216,13 @@ def reproject_to_frame(
         frame_override=frame,
         ref_dir_override=ref_dir,
     )
-    if update_world_coords and input_has_world_coords:
-        result = _replace_world_coords(
-            result,
-            wcs=tgt_wcs.wcs,
-            dim_a=dim_a,
-            dim_b=dim_b,
-            frame=frame,
-            keep_input=keep_input_world_coords,
-        )
+    result = _replace_world_coords(
+        result,
+        wcs=tgt_wcs.wcs,
+        dim_a=dim_a,
+        dim_b=dim_b,
+        frame=frame,
+    )
     if isinstance(result, xr.Dataset):
         result = _rotate_beam_pas_for_frame_change(source, result, frame=frame)
     return result
@@ -525,7 +517,6 @@ def _replace_world_coords(
     dim_a: str,
     dim_b: str,
     frame: str,
-    keep_input: bool,
 ) -> xr.Dataset | xr.DataArray:
     """Replace world-coordinate axes on an object using a provided output WCS.
 
@@ -543,10 +534,6 @@ def _replace_world_coords(
         Target frame selector controlling output coordinate names. Supported
         choices include `"galactic"`/`"gal"` for Galactic names and all other
         values for equatorial names.
-    keep_input
-        If `True`, preserve canonical pre-replacement world coordinates under
-        `input_<name>` keys. Legacy alias names (`*_input`) are still removed.
-
     Returns
     -------
     xr.Dataset | xr.DataArray
@@ -563,11 +550,6 @@ def _replace_world_coords(
         name for name in _known_world_coord_alias_names() if name in obj.coords
     ]
 
-    if keep_input:
-        for name in existing_world:
-            input_name = f"input_{name}"
-            if input_name not in obj.coords:
-                obj = obj.assign_coords({input_name: obj.coords[name]})
     if existing_world:
         obj = obj.drop_vars(existing_world)
     if existing_aliases:

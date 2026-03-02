@@ -163,3 +163,17 @@
 - Expanded coverage to include parameter semantics, return values, supported choice enumerations (for example reprojection method and frame mapping), and behavior/invariant notes.
 - Documented internal metadata/coordinate-management helpers, including stale world-coordinate alias cleanup behavior in output assembly.
 - Added a docstring for the nested per-plane reprojection helper inside `_reproject_dataarray` to keep internal behavior explicit.
+
+## 2026-03-02 08:02 UTC | Assistant: Codex (GPT-5)
+
+### `reproject_to_frame` `keep_grid` Docstring Clarification
+- Expanded the `keep_grid` parameter documentation in `wcs_reproject.py` to explicitly describe reference-direction and `l/m` zero-point behavior in both modes.
+- Documented that `keep_grid=True` reuses the input pixel grid while still updating frame/reference-direction metadata.
+- Documented that `keep_grid=False` rebuilds a centered same-size/same-spacing grid where `l=0, m=0` is at the image midpoint.
+
+## 2026-03-02 08:11 UTC | Assistant: Codex (GPT-5)
+
+### Removed Optional World-Coordinate Retention/Skipping in `reproject_to_frame`
+- Removed `update_world_coords` and `keep_input_world_coords` from the `reproject_to_frame` API.
+- Made world-coordinate replacement unconditional in frame reprojection so output world coordinates are always regenerated from the output WCS and target frame.
+- Removed the legacy `keep_input` branch from `_replace_world_coords`; stale canonical/alias world-coordinate arrays are dropped before writing fresh frame-consistent coordinates.
