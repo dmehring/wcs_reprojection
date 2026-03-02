@@ -1,84 +1,5 @@
 # SUMMARY
 
-## 2026-02-20 06:54 UTC | Assistant: Codex (GPT-5)
-
-### Notebook Fix: Valid FK5->Galactic Corner Comparison
-- Replaced the previous same-index corner comparison cell in `notebooks/plot_astro_images_with_matplotlib.ipynb` with a physically correct comparison pipeline:
-  - source corner pixel -> source FK5 RA/Dec (from source world-coordinate maps),
-  - FK5 RA/Dec -> Astropy Galactic (`glon/glat`),
-  - Astropy Galactic world -> target pixel (`wcs_world2pix` on the transformed dataset WCS),
-  - bilinear sample of target `galactic_longitude/galactic_latitude` at mapped target pixels.
-- The new output prints source pixel, mapped target pixel, both Galactic coordinate values, and arcsecond residuals (`dlon_arcsec`, `dlat_arcsec`).
-- Cleared stale outputs from the replaced cell.
-
-## 2026-02-20 06:39 UTC | Assistant: Codex (GPT-5)
-
-### Notebook Corner-Coordinate Validation Cell
-- Appended a new final code cell to `notebooks/plot_astro_images_with_matplotlib.ipynb` that validates Galactic corner coordinates by comparing:
-  - values taken from the reprojected dataset coordinate arrays (`galactic_longitude`, `galactic_latitude`), and
-  - Astropy-transformed corner RA/Dec values from the source dataset (`xds`) using `SkyCoord(...).galactic`.
-- The cell prints per-corner residuals (`dlon_arcsec`, `dlat_arcsec`) so frame/world-coordinate consistency is directly checkable.
-- The implementation uses existing `corners_xy` when present, with a fallback to image corners.
-
-## 2026-02-20 05:25 UTC | Assistant: Codex (GPT-5)
-
-### Notebook Example Addition: XRADIO Image + WCS Plot
-- Added a new code cell to `notebooks/plot_astro_images_with_matplotlib.ipynb` that:
-  - creates a synthetic XRADIO image with `make_empty_sky_image`,
-  - constructs a `DataArray` carrying XRADIO-style metadata,
-  - builds WCS via `build_wcs_from_xradio(..., dim_a="l", dim_b="m")`,
-  - extracts a 2D plane and plots it using `plotting.generate_astro_plot`.
-- Included a simple off-center point source in the synthetic plane so the rendered plot has visible structure.
-
-## 2026-02-20 03:56 UTC | Assistant: Codex (GPT-5)
-
-### WCS Builder Compatibility Fix
-- Fixed `build_wcs_from_xradio` in `wcs_reproject.py` to avoid writing `wcs.wcs.naxis1` / `wcs.wcs.naxis2`, which are not valid attributes on `astropy.wcs.Wcsprm`.
-- Updated the function to store output geometry on the high-level `WCS` object using:
-  - `wcs.pixel_shape = (naxis1, naxis2)` and
-  - `wcs.array_shape = (naxis2, naxis1)`.
-- Verified with a direct local sanity check that WCS construction now succeeds and reports expected `ctype`, `pixel_shape`, and `array_shape`.
-
-## 2026-02-20 00:00 UTC | Assistant: Codex (GPT-5)
-
-### Notebook Fix: `build_wcs_from_xradio` Demo
-- Fixed `NameError` in `notebooks/demonstrate_build_wcs_from_xradio.ipynb` by defining `sky_data` before constructing the demo `DataArray`.
-- Constructed `sky_data` with an explicit shape from the selected dimensions (`time`, `frequency`, `polarization`, `l`, `m`) to keep the example deterministic and self-contained.
-- Cleared stale notebook execution output/error traceback so the notebook is committed in a clean state.
-
-## 2026-02-19 22:25 UTC | Assistant: Codex (GPT-5)
-
-### Notebook Cell Extraction
-- Moved the first cell from `notebooks/wcs_reprojection_examples.ipynb` into a new notebook: `notebooks/plot_astro_images_with_matplotlib.ipynb`.
-- Left the source notebook with the remaining cells in original order and preserved notebook metadata/format fields in both files.
-
-## 2026-02-17 01:47 | Assistant: Codex (GPT-5)
-
-### Frame Conversion and Axis Handling
-- Fixed reprojection axis-order handling in `wcs_reproject.py` so frame-converted outputs are spatially correct and no longer appear unintentionally unrotated.
-- Confirmed `keep_grid=False` produces Galactic world-coordinate axes aligned with image edges.
-- Preserved robust peak world-position consistency checks for both `keep_grid=False` and `keep_grid=True`.
-
-### Beam PA Sign Correction
-- Corrected beam PA update sign during frame conversion:
-  - Beam `pa` in `BEAM_FIT_PARAMS_*` is now updated with the opposite sign of the local frame-basis angle so PA remains consistent with displayed source orientation.
-- Verified Example 3 now reports negative beam PA delta for FK5 -> Galactic in the shown setup, matching plot convention expectations.
-
-### Example 3 Verification Upgrades
-- Reworked Example 3 notebook checks to use an off-center point source for position/grid tests and a Gaussian source for orientation tests.
-- Added explicit user-facing checks for:
-  - Peak world-position consistency (Astropy-transformed input vs output world coords).
-  - Galactic-grid edge parallelism (`keep_grid=False`) via cross-axis ratios.
-  - Beam/source major-axis PA consistency with sign-aware reporting in plot convention.
-- Updated Example 3 printouts to avoid ambiguous sign interpretation and provide a clear PASS/CHECK summary.
-
-### Regression Tests
-- Added `tests/test_reproject_to_frame_galactic.py` with focused regression coverage:
-  - peak world-position consistency for both keep-grid modes,
-  - Galactic grid parallel-to-edge behavior for `keep_grid=False`,
-  - beam PA change consistency with measured source major-axis rotation.
-- Ran `flake8` clean on touched Python files and reformatted updated test code with `black`.
-
 ## 2026-02-16 16:21 | Assistant: Codex (GPT-5)
 
 ### Packaging and Environment
@@ -120,6 +41,33 @@
 - Added and refined `AGENTS.md` with project strategy, coding/testing conventions, and assistant personalization.
 - Updated README install/usage guidance to align with XRADIO-first workflows.
 
+## 2026-02-17 01:47 | Assistant: Codex (GPT-5)
+
+### Frame Conversion and Axis Handling
+- Fixed reprojection axis-order handling in `wcs_reproject.py` so frame-converted outputs are spatially correct and no longer appear unintentionally unrotated.
+- Confirmed `keep_grid=False` produces Galactic world-coordinate axes aligned with image edges.
+- Preserved robust peak world-position consistency checks for both `keep_grid=False` and `keep_grid=True`.
+
+### Beam PA Sign Correction
+- Corrected beam PA update sign during frame conversion:
+  - Beam `pa` in `BEAM_FIT_PARAMS_*` is now updated with the opposite sign of the local frame-basis angle so PA remains consistent with displayed source orientation.
+- Verified Example 3 now reports negative beam PA delta for FK5 -> Galactic in the shown setup, matching plot convention expectations.
+
+### Example 3 Verification Upgrades
+- Reworked Example 3 notebook checks to use an off-center point source for position/grid tests and a Gaussian source for orientation tests.
+- Added explicit user-facing checks for:
+  - Peak world-position consistency (Astropy-transformed input vs output world coords).
+  - Galactic-grid edge parallelism (`keep_grid=False`) via cross-axis ratios.
+  - Beam/source major-axis PA consistency with sign-aware reporting in plot convention.
+- Updated Example 3 printouts to avoid ambiguous sign interpretation and provide a clear PASS/CHECK summary.
+
+### Regression Tests
+- Added `tests/test_reproject_to_frame_galactic.py` with focused regression coverage:
+  - peak world-position consistency for both keep-grid modes,
+  - Galactic grid parallel-to-edge behavior for `keep_grid=False`,
+  - beam PA change consistency with measured source major-axis rotation.
+- Ran `flake8` clean on touched Python files and reformatted updated test code with `black`.
+
 ## 2026-02-19 01:00 (approx) | Assistant: Gemini 3 Flash
 
 ### Gaussian Generation and Moments
@@ -155,3 +103,55 @@
   - supported frame choices and resulting axis-type behavior,
   - coordinate override handling and expected units.
 - Documented return structure (`_WCSBuildResult`), core invariants/assumptions (radian inputs, degree-based FITS-WCS output, 2D celestial scope), and key failure modes (`KeyError`, `ValueError`, `IndexError`).
+
+## 2026-02-19 22:25 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Cell Extraction
+- Moved the first cell from `notebooks/wcs_reprojection_examples.ipynb` into a new notebook: `notebooks/plot_astro_images_with_matplotlib.ipynb`.
+- Left the source notebook with the remaining cells in original order and preserved notebook metadata/format fields in both files.
+
+## 2026-02-20 00:00 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Fix: `build_wcs_from_xradio` Demo
+- Fixed `NameError` in `notebooks/demonstrate_build_wcs_from_xradio.ipynb` by defining `sky_data` before constructing the demo `DataArray`.
+- Constructed `sky_data` with an explicit shape from the selected dimensions (`time`, `frequency`, `polarization`, `l`, `m`) to keep the example deterministic and self-contained.
+- Cleared stale notebook execution output/error traceback so the notebook is committed in a clean state.
+
+## 2026-02-20 03:56 UTC | Assistant: Codex (GPT-5)
+
+### WCS Builder Compatibility Fix
+- Fixed `build_wcs_from_xradio` in `wcs_reproject.py` to avoid writing `wcs.wcs.naxis1` / `wcs.wcs.naxis2`, which are not valid attributes on `astropy.wcs.Wcsprm`.
+- Updated the function to store output geometry on the high-level `WCS` object using:
+  - `wcs.pixel_shape = (naxis1, naxis2)` and
+  - `wcs.array_shape = (naxis2, naxis1)`.
+- Verified with a direct local sanity check that WCS construction now succeeds and reports expected `ctype`, `pixel_shape`, and `array_shape`.
+
+## 2026-02-20 05:25 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Example Addition: XRADIO Image + WCS Plot
+- Added a new code cell to `notebooks/plot_astro_images_with_matplotlib.ipynb` that:
+  - creates a synthetic XRADIO image with `make_empty_sky_image`,
+  - constructs a `DataArray` carrying XRADIO-style metadata,
+  - builds WCS via `build_wcs_from_xradio(..., dim_a="l", dim_b="m")`,
+  - extracts a 2D plane and plots it using `plotting.generate_astro_plot`.
+- Included a simple off-center point source in the synthetic plane so the rendered plot has visible structure.
+
+## 2026-02-20 06:39 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Corner-Coordinate Validation Cell
+- Appended a new final code cell to `notebooks/plot_astro_images_with_matplotlib.ipynb` that validates Galactic corner coordinates by comparing:
+  - values taken from the reprojected dataset coordinate arrays (`galactic_longitude`, `galactic_latitude`), and
+  - Astropy-transformed corner RA/Dec values from the source dataset (`xds`) using `SkyCoord(...).galactic`.
+- The cell prints per-corner residuals (`dlon_arcsec`, `dlat_arcsec`) so frame/world-coordinate consistency is directly checkable.
+- The implementation uses existing `corners_xy` when present, with a fallback to image corners.
+
+## 2026-02-20 06:54 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Fix: Valid FK5->Galactic Corner Comparison
+- Replaced the previous same-index corner comparison cell in `notebooks/plot_astro_images_with_matplotlib.ipynb` with a physically correct comparison pipeline:
+  - source corner pixel -> source FK5 RA/Dec (from source world-coordinate maps),
+  - FK5 RA/Dec -> Astropy Galactic (`glon/glat`),
+  - Astropy Galactic world -> target pixel (`wcs_world2pix` on the transformed dataset WCS),
+  - bilinear sample of target `galactic_longitude/galactic_latitude` at mapped target pixels.
+- The new output prints source pixel, mapped target pixel, both Galactic coordinate values, and arcsecond residuals (`dlon_arcsec`, `dlat_arcsec`).
+- Cleared stale outputs from the replaced cell.
