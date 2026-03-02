@@ -127,6 +127,7 @@ def reproject_to_frame(
     method: str = "interp",
     order: int = 1,
     keep_grid: bool = False,
+    include_original_world_coords: bool = False,
 ) -> xr.Dataset | xr.DataArray:
     """
     Reproject `source` to a new sky frame.
@@ -158,6 +159,14 @@ def reproject_to_frame(
           midpoint (exact center pixel for odd sizes, midpoint between central
           pixels for even sizes). In this mode, the transformed output reference
           direction is associated with that centered `0,0` location.
+    include_original_world_coords
+        If True, include additional world-coordinate arrays for the original
+        source frame on the output grid. These arrays are computed by
+        transforming every output-pixel world coordinate from `frame` back into
+        the source reference frame, so the mapping between target-frame and
+        original-frame coordinates is one-to-one and pixel-wise consistent.
+        Added coordinates use `original_` prefixes (for example
+        `original_right_ascension`, `original_declination`).
     Returns
     -------
     Dataset or DataArray
@@ -223,6 +232,15 @@ def reproject_to_frame(
         dim_b=dim_b,
         frame=frame,
     )
+    if include_original_world_coords:
+        src_frame = _reference_frame_from_xradio(src)
+        result = _add_original_world_coords(
+            result,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            from_frame=frame,
+            to_frame=src_frame,
+        )
     if isinstance(result, xr.Dataset):
         result = _rotate_beam_pas_for_frame_change(source, result, frame=frame)
     return result
@@ -454,6 +472,25 @@ def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
     return "right_ascension", "declination"
 
 
+def _reference_frame_from_xradio(obj: xr.DataArray | xr.Dataset) -> str:
+    """Return the source reference-direction frame from XRADIO metadata.
+
+    Parameters
+    ----------
+    obj
+        Data object with optional `attrs["coordinate_system_info"]` metadata.
+
+    Returns
+    -------
+    str
+        Source frame name from metadata, defaulting to `"icrs"` when missing.
+    """
+    csi = obj.attrs.get("coordinate_system_info", {})
+    ref_dir = csi.get("reference_direction", {})
+    ref_attrs = ref_dir.get("attrs", {})
+    return str(ref_attrs.get("frame", "icrs"))
+
+
 def _known_world_coord_names() -> tuple[str, ...]:
     """Return canonical 2D world-coordinate names supported by this package.
 
@@ -510,6 +547,41 @@ def _compute_world_coords_from_wcs(
     return np.deg2rad(lon_deg), np.deg2rad(lat_deg)
 
 
+def _transform_world_coords_between_frames(
+    lon_rad: np.ndarray,
+    lat_rad: np.ndarray,
+    *,
+    from_frame: str,
+    to_frame: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Transform 2D world-coordinate arrays between celestial frames.
+
+    Parameters
+    ----------
+    lon_rad
+        Longitude array in radians.
+    lat_rad
+        Latitude array in radians.
+    from_frame
+        Input frame name understood by `SkyCoord`.
+    to_frame
+        Output frame name understood by `SkyCoord`.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Transformed `(lon_rad, lat_rad)` arrays in radians with the same shape as
+        inputs.
+    """
+    flat_lon = np.asarray(lon_rad).ravel()
+    flat_lat = np.asarray(lat_rad).ravel()
+    coord = SkyCoord(flat_lon * u.rad, flat_lat * u.rad, frame=from_frame)
+    transformed = coord.transform_to(to_frame)
+    out_lon = transformed.spherical.lon.to_value(u.rad).reshape(lon_rad.shape)
+    out_lat = transformed.spherical.lat.to_value(u.rad).reshape(lat_rad.shape)
+    return np.asarray(out_lon, dtype=float), np.asarray(out_lat, dtype=float)
+
+
 def _replace_world_coords(
     obj: xr.Dataset | xr.DataArray,
     *,
@@ -562,6 +634,69 @@ def _replace_world_coords(
         {
             lon_name: ((dim_a, dim_b), lon_rad),
             lat_name: ((dim_a, dim_b), lat_rad),
+        }
+    )
+    return obj
+
+
+def _add_original_world_coords(
+    obj: xr.Dataset | xr.DataArray,
+    *,
+    dim_a: str,
+    dim_b: str,
+    from_frame: str,
+    to_frame: str,
+) -> xr.Dataset | xr.DataArray:
+    """Add output-grid coordinates transformed from target frame to source frame.
+
+    Parameters
+    ----------
+    obj
+        Output data object that already contains canonical world coordinates for
+        `from_frame`.
+    dim_a
+        First spatial dimension name.
+    dim_b
+        Second spatial dimension name.
+    from_frame
+        Frame currently represented by canonical world-coordinate arrays on
+        `obj`.
+    to_frame
+        Original/source frame to write under `original_` coordinate names.
+
+    Returns
+    -------
+    xr.Dataset | xr.DataArray
+        Object with additional coordinates:
+        - `original_<lon_name>`
+        - `original_<lat_name>`
+        where base names are selected from `to_frame`.
+    """
+    from_lon_name, from_lat_name = _world_coord_names_for_frame(from_frame)
+    to_lon_name, to_lat_name = _world_coord_names_for_frame(to_frame)
+
+    lon_in = np.asarray(obj.coords[from_lon_name].values)
+    lat_in = np.asarray(obj.coords[from_lat_name].values)
+    lon_out, lat_out = _transform_world_coords_between_frames(
+        lon_in,
+        lat_in,
+        from_frame=from_frame,
+        to_frame=to_frame,
+    )
+
+    original_lon_name = f"original_{to_lon_name}"
+    original_lat_name = f"original_{to_lat_name}"
+
+    stale_originals = [
+        name for name in (original_lon_name, original_lat_name) if name in obj.coords
+    ]
+    if stale_originals:
+        obj = obj.drop_vars(stale_originals)
+
+    obj = obj.assign_coords(
+        {
+            original_lon_name: ((dim_a, dim_b), lon_out),
+            original_lat_name: ((dim_a, dim_b), lat_out),
         }
     )
     return obj

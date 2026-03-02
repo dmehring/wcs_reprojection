@@ -191,6 +191,42 @@ def test_legacy_world_input_alias_coords_are_not_copied_to_output() -> None:
     assert "declination_input" not in out.coords
 
 
+def test_include_original_world_coords_are_pixelwise_transform_consistent() -> None:
+    """Original-frame coords should be transformed consistently on output pixels."""
+    src = _make_point_source_dataset()
+    out = reproject_to_frame(
+        src,
+        "galactic",
+        keep_grid=False,
+        method="interp",
+        order=1,
+        include_original_world_coords=True,
+    )
+
+    assert "galactic_longitude" in out.coords
+    assert "galactic_latitude" in out.coords
+    assert "original_right_ascension" in out.coords
+    assert "original_declination" in out.coords
+
+    glon = out["galactic_longitude"].values
+    glat = out["galactic_latitude"].values
+    ora = out["original_right_ascension"].values
+    odec = out["original_declination"].values
+
+    back = SkyCoord(glon.ravel() * u.rad, glat.ravel() * u.rad, frame="galactic")
+    back_fk5 = back.transform_to("fk5")
+    exp_ra = back_fk5.spherical.lon.to_value(u.rad).reshape(glon.shape)
+    exp_dec = back_fk5.spherical.lat.to_value(u.rad).reshape(glat.shape)
+
+    dra = np.arctan2(np.sin(ora - exp_ra), np.cos(ora - exp_ra))
+    ddec = odec - exp_dec
+    max_dra_arcsec = float(np.nanmax(np.abs(np.rad2deg(dra) * 3600.0)))
+    max_ddec_arcsec = float(np.nanmax(np.abs(np.rad2deg(ddec) * 3600.0)))
+
+    assert max_dra_arcsec < 0.05
+    assert max_ddec_arcsec < 0.05
+
+
 def test_keep_grid_false_galactic_axes_parallel_image_edges() -> None:
     """For keep_grid=False, Galactic lon/lat should align with image axes."""
     src = _make_point_source_dataset()
