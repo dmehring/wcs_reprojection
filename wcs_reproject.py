@@ -237,6 +237,20 @@ def reproject_to_frame(
 
 
 def _require_optional_deps() -> None:
+    """Raise a clear runtime error when optional WCS dependencies are unavailable.
+
+    Returns
+    -------
+    None
+        This helper returns normally only when `astropy` and `reproject` imports
+        succeeded at module import time.
+
+    Raises
+    ------
+    RuntimeError
+        Raised when optional dependencies failed to import. The original import
+        exception text is included in the message for easier diagnosis.
+    """
     if _IMPORT_ERROR is not None:
         raise RuntimeError(
             "astropy + reproject are required for WCS reprojection. "
@@ -245,6 +259,27 @@ def _require_optional_deps() -> None:
 
 
 def _get_dataarray(obj: xr.Dataset | xr.DataArray, data_var: str) -> xr.DataArray:
+    """Resolve an input object into a single `xarray.DataArray`.
+
+    Parameters
+    ----------
+    obj
+        Source object to extract from. If `obj` is a Dataset, `data_var` is used
+        as the lookup key in `obj.data_vars`. If `obj` is already a DataArray, it
+        is returned unchanged.
+    data_var
+        Data variable name used when `obj` is a Dataset.
+
+    Returns
+    -------
+    xr.DataArray
+        The selected data array that will be reprojected.
+
+    Raises
+    ------
+    KeyError
+        If `obj` is a Dataset and `data_var` is not present.
+    """
     if isinstance(obj, xr.Dataset):
         if data_var not in obj.data_vars:
             raise KeyError(
@@ -256,6 +291,22 @@ def _get_dataarray(obj: xr.Dataset | xr.DataArray, data_var: str) -> xr.DataArra
 
 
 def _flatten_group_var_names(value) -> list[str]:
+    """Flatten nested XRADIO data-group definitions into a variable-name list.
+
+    Parameters
+    ----------
+    value
+        Group-definition value from `attrs["data_groups"][group_name]`. Supported
+        shapes include:
+        - `str`: single variable name,
+        - `list`/`tuple`: nested collections of names and/or collections,
+        - `dict`: nested mapping whose values contain the same structures.
+
+    Returns
+    -------
+    list[str]
+        Flat list of variable names. Unknown element types are ignored.
+    """
     if isinstance(value, str):
         return [value]
     if isinstance(value, dict):
@@ -278,7 +329,34 @@ def _pa_basis_rotation_rad(
     src_frame: str,
     tgt_frame: str,
 ) -> float:
-    """Compute local PA rotation from source frame north to target-frame basis."""
+    """Compute local frame-basis rotation used for beam PA updates.
+
+    Parameters
+    ----------
+    ref_lon_rad
+        Reference longitude of the tangent point in radians, interpreted in
+        `src_frame`.
+    ref_lat_rad
+        Reference latitude of the tangent point in radians, interpreted in
+        `src_frame`.
+    src_frame
+        Source frame name understood by `astropy.coordinates.SkyCoord` (for
+        example `"icrs"`, `"fk5"`, `"galactic"`).
+    tgt_frame
+        Target frame name understood by `astropy.coordinates.SkyCoord`.
+
+    Returns
+    -------
+    float
+        Position-angle rotation in radians, measured at the transformed tangent
+        point from target-frame north toward the transformed source-frame north.
+
+    Notes
+    -----
+    The implementation perturbs latitude by a tiny epsilon in `src_frame` to
+    define a local north direction, transforms both points to `tgt_frame`, then
+    computes the target-frame position angle between them.
+    """
     # Small angular step to define local north direction in source frame.
     eps = 1e-7
     lat2 = np.clip(ref_lat_rad + eps, -np.pi / 2 + 1e-10, np.pi / 2 - 1e-10)
@@ -292,7 +370,32 @@ def _pa_basis_rotation_rad(
 def _rotate_beam_pas_for_frame_change(
     source: xr.Dataset | xr.DataArray, out: xr.Dataset, *, frame: str
 ) -> xr.Dataset:
-    """Rotate beam position angles to match frame-changed image orientation."""
+    """Rotate `BEAM_FIT_PARAMS_*` PA values after a frame conversion.
+
+    Parameters
+    ----------
+    source
+        Original input object before reprojection. Beam PA updates are only
+        attempted when this is a Dataset containing frame metadata in
+        `attrs["coordinate_system_info"]`.
+    out
+        Output Dataset after reprojection. Any `BEAM_FIT_PARAMS_*` data variable
+        with a `"beam_params_label"` coordinate and a `"pa"` label is updated.
+    frame
+        Target frame name (for example `"icrs"`, `"fk5"`, `"galactic"`).
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with updated beam position-angle values when applicable; unchanged
+        otherwise.
+
+    Notes
+    -----
+    PA values are updated with the opposite sign of the local basis rotation used
+    in this package's world-coordinate convention. Variables missing expected beam
+    metadata are skipped safely.
+    """
     if not isinstance(source, xr.Dataset):
         return out
 
@@ -339,6 +442,20 @@ def _rotate_beam_pas_for_frame_change(
 
 
 def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
+    """Map a frame name to canonical world-coordinate variable names.
+
+    Parameters
+    ----------
+    frame
+        Frame selector. `"galactic"` and `"gal"` map to Galactic coordinate
+        names; all other values map to equatorial names.
+
+    Returns
+    -------
+    tuple[str, str]
+        `(longitude_name, latitude_name)` coordinate names for the requested
+        frame.
+    """
     frame_lower = frame.lower()
     if frame_lower in {"galactic", "gal"}:
         return "galactic_longitude", "galactic_latitude"
@@ -346,7 +463,13 @@ def _world_coord_names_for_frame(frame: str) -> tuple[str, str]:
 
 
 def _known_world_coord_names() -> tuple[str, ...]:
-    """Return canonical 2D world-coordinate axis names used by this package."""
+    """Return canonical 2D world-coordinate names supported by this package.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Canonical world-coordinate names used in Dataset/DataArray coordinates.
+    """
     return (
         "right_ascension",
         "declination",
@@ -356,7 +479,14 @@ def _known_world_coord_names() -> tuple[str, ...]:
 
 
 def _known_world_coord_alias_names() -> tuple[str, ...]:
-    """Return legacy/input world-coordinate alias names that should be dropped."""
+    """Return legacy world-coordinate alias names that should be removed.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Alias names derived from canonical world-coordinate names in two forms:
+        `input_<name>` and `<name>_input`.
+    """
     aliases: list[str] = []
     for name in _known_world_coord_names():
         aliases.append(f"input_{name}")
@@ -367,7 +497,22 @@ def _known_world_coord_alias_names() -> tuple[str, ...]:
 def _compute_world_coords_from_wcs(
     wcs: WCS, *, n_a: int, n_b: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Evaluate world-coordinate longitude/latitude arrays on a full pixel grid."""
+    """Evaluate 2D longitude/latitude coordinates from a WCS on a pixel grid.
+
+    Parameters
+    ----------
+    wcs
+        Celestial WCS used to convert pixel indices to world coordinates.
+    n_a
+        Number of pixels along the first spatial axis.
+    n_b
+        Number of pixels along the second spatial axis.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Two arrays `(lon_rad, lat_rad)` with shape `(n_a, n_b)` in radians.
+    """
     idx_a, idx_b = np.indices((n_a, n_b))
     lon_deg, lat_deg = wcs.wcs_pix2world(idx_a, idx_b, 0)
     return np.deg2rad(lon_deg), np.deg2rad(lat_deg)
@@ -382,7 +527,36 @@ def _replace_world_coords(
     frame: str,
     keep_input: bool,
 ) -> xr.Dataset | xr.DataArray:
-    """Replace canonical world coordinates with arrays computed from `wcs`."""
+    """Replace world-coordinate axes on an object using a provided output WCS.
+
+    Parameters
+    ----------
+    obj
+        Dataset or DataArray whose coordinates are being updated.
+    wcs
+        Output celestial WCS used to compute replacement world-coordinate arrays.
+    dim_a
+        First spatial pixel dimension name.
+    dim_b
+        Second spatial pixel dimension name.
+    frame
+        Target frame selector controlling output coordinate names. Supported
+        choices include `"galactic"`/`"gal"` for Galactic names and all other
+        values for equatorial names.
+    keep_input
+        If `True`, preserve canonical pre-replacement world coordinates under
+        `input_<name>` keys. Legacy alias names (`*_input`) are still removed.
+
+    Returns
+    -------
+    xr.Dataset | xr.DataArray
+        Object with canonical world-coordinate arrays recomputed from `wcs`.
+
+    Notes
+    -----
+    Existing canonical coordinates and known aliases are removed before assigning
+    fresh frame-consistent coordinates.
+    """
     lon_name, lat_name = _world_coord_names_for_frame(frame)
     existing_world = [name for name in _known_world_coord_names() if name in obj.coords]
     existing_aliases = [
@@ -412,6 +586,26 @@ def _replace_world_coords(
 
 
 def _resolve_data_group_vars(ds: xr.Dataset, data_group: str) -> list[str]:
+    """Resolve and validate variable names declared for a Dataset data group.
+
+    Parameters
+    ----------
+    ds
+        Dataset containing `attrs["data_groups"]`.
+    data_group
+        Group name key in `ds.attrs["data_groups"]` (commonly `"base"`).
+
+    Returns
+    -------
+    list[str]
+        De-duplicated list of data-variable names that exist in `ds`.
+
+    Raises
+    ------
+    KeyError
+        If `data_groups` metadata is missing, `data_group` is unknown, or no
+        resolved names are present in Dataset variables.
+    """
     groups = ds.attrs.get("data_groups")
     if not isinstance(groups, dict) or data_group not in groups:
         raise KeyError(
@@ -437,6 +631,32 @@ def _resolve_data_group_vars(ds: xr.Dataset, data_group: str) -> list[str]:
 def _get_group_spatial_vars(
     ds: xr.Dataset, *, data_group: str | None, dim_a: str, dim_b: str
 ) -> list[str] | None:
+    """Return group variables that include both requested spatial dimensions.
+
+    Parameters
+    ----------
+    ds
+        Source Dataset.
+    data_group
+        Group name in `ds.attrs["data_groups"]` to resolve. `None` disables
+        group-mode selection and returns `None`.
+    dim_a
+        First required spatial dimension.
+    dim_b
+        Second required spatial dimension.
+
+    Returns
+    -------
+    list[str] | None
+        List of group variable names containing both spatial dimensions, or
+        `None` when group mode is disabled or the group metadata/key is absent.
+
+    Raises
+    ------
+    ValueError
+        If the group exists but none of its resolved variables carry both spatial
+        dimensions.
+    """
     if data_group is None:
         return None
 
@@ -466,6 +686,35 @@ def _reproject_dataset_group_to_match(
     method: str,
     order: int,
 ) -> xr.Dataset:
+    """Reproject all selected variables in a source Dataset data group.
+
+    Parameters
+    ----------
+    source
+        Source Dataset containing variables listed in `data_vars`.
+    target
+        Target grid object. If a Dataset is provided, its coordinates/attrs are
+        used as output context; if a DataArray is provided, a new Dataset is
+        created for outputs.
+    data_vars
+        Variable names to reproject. Each variable must include `dim_a` and
+        `dim_b`.
+    dim_a
+        First spatial pixel dimension.
+    dim_b
+        Second spatial pixel dimension.
+    method
+        Reprojection method. Supported choices: `"interp"`, `"exact"`,
+        `"adaptive"`.
+    order
+        Interpolation order for `"interp"` method (`0`, `1`, `3`, etc.).
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset containing reprojected variables from `data_vars`, with metadata
+        copied from `target` when it is a Dataset, otherwise from `source`.
+    """
     src_ref = source[data_vars[0]]
     tgt_ref = _get_target_grid_dataarray(
         target, data_var=data_vars[0], dim_a=dim_a, dim_b=dim_b
@@ -506,6 +755,34 @@ def _get_target_grid_dataarray(
     dim_a: str,
     dim_b: str,
 ) -> xr.DataArray:
+    """Return a DataArray that defines the target reprojection grid and WCS.
+
+    Parameters
+    ----------
+    obj
+        Target object provided by the caller.
+    data_var
+        Preferred data-variable name when `obj` is a Dataset.
+    dim_a
+        First spatial dimension name required when synthesizing a grid-only
+        DataArray from Dataset coordinates.
+    dim_b
+        Second spatial dimension name required when synthesizing a grid-only
+        DataArray from Dataset coordinates.
+
+    Returns
+    -------
+    xr.DataArray
+        Existing target DataArray, requested Dataset variable, or a synthetic
+        zero-valued DataArray carrying target spatial coordinates and optional
+        `coordinate_system_info`.
+
+    Raises
+    ------
+    KeyError
+        If `obj` is a Dataset lacking both `data_var` and required spatial
+        coordinates `dim_a`/`dim_b`.
+    """
     if isinstance(obj, xr.DataArray):
         return obj
 
@@ -541,7 +818,37 @@ def _attach_metadata(
     frame_override: str | None = None,
     ref_dir_override: Iterable[float] | None = None,
 ) -> xr.Dataset | xr.DataArray:
-    """Attach metadata/attrs to reprojection output while preserving dataset context."""
+    """Attach attrs/coordinates around a reprojected DataArray result.
+
+    Parameters
+    ----------
+    source
+        Original input object used for reprojection.
+    target
+        Optional target object. When present and a Dataset, target attrs/context
+        are preferred for match-mode outputs.
+    out
+        Reprojected DataArray to attach into a DataArray or Dataset container.
+    data_var
+        Data variable name to assign when returning a Dataset.
+    frame_override
+        Optional frame name applied to output `coordinate_system_info` in
+        frame-conversion workflows.
+    ref_dir_override
+        Optional reference direction `[lon, lat]` in radians written into updated
+        `coordinate_system_info` when `frame_override` is provided.
+
+    Returns
+    -------
+    xr.Dataset | xr.DataArray
+        Output object with reprojected data inserted and metadata preserved or
+        updated for the selected workflow.
+
+    Notes
+    -----
+    Known world-coordinate alias coordinates (`input_*` and `*_input`) are
+    dropped from Dataset outputs to avoid stale coordinate confusion.
+    """
     if isinstance(source, xr.DataArray):
         out.attrs = dict(source.attrs)
         if frame_override:
@@ -592,6 +899,22 @@ def _attach_metadata(
 def _update_frame_attrs(
     da: xr.DataArray, frame: str, *, ref_dir_override: Iterable[float] | None = None
 ) -> None:
+    """Update frame metadata in a DataArray's `coordinate_system_info` attribute.
+
+    Parameters
+    ----------
+    da
+        DataArray whose `attrs["coordinate_system_info"]` may be updated.
+    frame
+        Target frame name to write into reference-direction attrs.
+    ref_dir_override
+        Optional replacement reference direction `[lon, lat]` in radians.
+
+    Returns
+    -------
+    None
+        The DataArray is updated in place when metadata is present.
+    """
     if "coordinate_system_info" not in da.attrs:
         return
     da.attrs["coordinate_system_info"] = _update_csi_frame(
@@ -609,6 +932,29 @@ def _update_csi_frame(
     *,
     ref_dir_override: Iterable[float] | None = None,
 ) -> dict:
+    """Return a shallow-copied CSI dict with updated frame/reference direction.
+
+    Parameters
+    ----------
+    csi
+        Coordinate-system-info mapping in XRADIO style.
+    frame
+        Frame name written into
+        `csi["reference_direction"]["attrs"]["frame"]` when that structure
+        exists.
+    da
+        DataArray associated with this metadata update. Present for signature
+        symmetry with callers; not used directly in the current implementation.
+    ref_dir_override
+        Optional replacement `[lon, lat]` in radians written to
+        `csi["reference_direction"]["data"]`.
+
+    Returns
+    -------
+    dict
+        New dictionary containing updated reference-direction metadata when
+        available; otherwise equivalent to the input mapping.
+    """
     new_csi = dict(csi)
     if "reference_direction" in new_csi:
         rd = dict(new_csi["reference_direction"])
@@ -627,6 +973,23 @@ def _coords_for_same_pixel_size(
     dim_a: str,
     dim_b: str,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Construct a centered output grid preserving source pixel spacing.
+
+    Parameters
+    ----------
+    src
+        Source DataArray containing spatial coordinates for `dim_a` and `dim_b`.
+    dim_a
+        First spatial dimension used to estimate output pixel spacing.
+    dim_b
+        Second spatial dimension used to estimate output pixel spacing.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        New `(coord_a, coord_b)` arrays with the same lengths and median pixel
+        spacings as input axes, centered around zero.
+    """
     coord_a_src = np.asarray(src[dim_a].values)
     coord_b_src = np.asarray(src[dim_b].values)
     cdelt_a = float(np.nanmedian(np.diff(coord_a_src)))
@@ -759,6 +1122,26 @@ def build_wcs_from_xradio(
 
 
 def _coord_to_cdelt_crpix(coord: np.ndarray) -> Tuple[float, float]:
+    """Infer FITS-WCS axis spacing and reference-pixel index from coordinates.
+
+    Parameters
+    ----------
+    coord
+        One-dimensional spatial coordinate array in radians.
+
+    Returns
+    -------
+    tuple[float, float]
+        `(cdelt, crpix0)` where `cdelt` is median axis spacing and `crpix0` is
+        the 0-based pixel index where coordinate value zero is interpolated.
+
+    Raises
+    ------
+    ValueError
+        If inferred spacing is exactly zero.
+    IndexError
+        If fewer than two coordinates are provided (via `coord[1]` access).
+    """
     coord = np.asarray(coord)
     diffs = np.diff(coord)
     cdelt = float(np.nanmedian(diffs))
@@ -775,6 +1158,21 @@ def _coord_to_cdelt_crpix(coord: np.ndarray) -> Tuple[float, float]:
 
 
 def _frame_to_ctype(frame: str, projection: str) -> Tuple[str, str]:
+    """Convert frame/projection inputs into FITS `CTYPE1`/`CTYPE2` strings.
+
+    Parameters
+    ----------
+    frame
+        Sky frame selector. `"galactic"`/`"gal"` produce `GLON`/`GLAT`; all
+        other values produce `RA`/`DEC`.
+    projection
+        FITS projection suffix such as `"SIN"` or `"TAN"`.
+
+    Returns
+    -------
+    tuple[str, str]
+        `(ctype1, ctype2)` strings ready for assignment to `wcs.wcs.ctype`.
+    """
     frame_lower = frame.lower()
     if frame_lower in {"galactic", "gal"}:
         return f"GLON-{projection}", f"GLAT-{projection}"
@@ -782,6 +1180,25 @@ def _frame_to_ctype(frame: str, projection: str) -> Tuple[str, str]:
 
 
 def _transform_reference_direction(da: xr.DataArray, frame: str) -> tuple[float, float]:
+    """Transform a DataArray reference direction into a target sky frame.
+
+    Parameters
+    ----------
+    da
+        DataArray carrying XRADIO `coordinate_system_info` metadata.
+    frame
+        Target frame name understood by `SkyCoord.transform_to`.
+
+    Returns
+    -------
+    tuple[float, float]
+        `(lon_rad, lat_rad)` in radians for the transformed reference direction.
+
+    Notes
+    -----
+    If source reference-direction metadata is missing, the transformation starts
+    from `[0.0, 0.0]` in an `"icrs"` frame default.
+    """
     csi = da.attrs.get("coordinate_system_info", {})
     ref_dir = csi.get("reference_direction", {})
     ref_attrs = ref_dir.get("attrs", {})
@@ -807,12 +1224,59 @@ def _reproject_dataarray(
     method: str,
     order: int,
 ) -> xr.DataArray:
+    """Reproject a DataArray plane-by-plane across non-spatial dimensions.
+
+    Parameters
+    ----------
+    src
+        Input DataArray containing spatial dimensions `dim_a` and `dim_b`.
+    wcs_in
+        Input celestial WCS describing `src`.
+    wcs_out
+        Output celestial WCS describing the target grid.
+    coord_a_out
+        Output coordinate values for `dim_a`.
+    coord_b_out
+        Output coordinate values for `dim_b`.
+    dim_a
+        First spatial core dimension name in `src`.
+    dim_b
+        Second spatial core dimension name in `src`.
+    method
+        Reprojection method. Supported choices: `"interp"`, `"exact"`,
+        `"adaptive"`.
+    order
+        Interpolation order used only for `"interp"` (`0`, `1`, `3`, etc.).
+
+    Returns
+    -------
+    xr.DataArray
+        Reprojected DataArray with the same non-spatial dimensions as `src` and
+        output spatial coordinates `(coord_a_out, coord_b_out)`.
+
+    Notes
+    -----
+    Reprojection kernels operate in `(y, x)` order, so each `(dim_a, dim_b)` plane
+    is transposed before/after calling `reproject`.
+    """
     reproject_func = _select_reproject_func(method)
     shape_out = (coord_b_out.size, coord_a_out.size)
     out_dim_a = f"{dim_a}__out"
     out_dim_b = f"{dim_b}__out"
 
     def _reproject_plane(plane: np.ndarray) -> np.ndarray:
+        """Reproject a single 2D spatial plane in NumPy array form.
+
+        Parameters
+        ----------
+        plane
+            Plane with axis order `(dim_a, dim_b)`.
+
+        Returns
+        -------
+        np.ndarray
+            Reprojected plane with the same axis order `(dim_a, dim_b)`.
+        """
         arr = np.asarray(plane)
         # Reproject expects array order (y, x). For our (dim_a, dim_b) core
         # dims, transpose to (dim_b, dim_a) for reprojection, then transpose
@@ -849,6 +1313,26 @@ def _reproject_dataarray(
 
 
 def _select_reproject_func(method: str):
+    """Return the reproject backend function for a method selector.
+
+    Parameters
+    ----------
+    method
+        Method selector. Supported choices are:
+        - `"interp"`: interpolation-based reprojection,
+        - `"exact"`: flux-conserving footprint overlap,
+        - `"adaptive"`: adaptive resampling.
+
+    Returns
+    -------
+    callable
+        Reproject function object from the `reproject` package.
+
+    Raises
+    ------
+    ValueError
+        If `method` is not one of the supported choices.
+    """
     method_lower = method.lower()
     if method_lower == "interp":
         return reproject_interp

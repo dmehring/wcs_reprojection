@@ -155,3 +155,11 @@
   - bilinear sample of target `galactic_longitude/galactic_latitude` at mapped target pixels.
 - The new output prints source pixel, mapped target pixel, both Galactic coordinate values, and arcsecond residuals (`dlon_arcsec`, `dlat_arcsec`).
 - Cleared stale outputs from the replaced cell.
+
+## 2026-03-02 07:35 UTC | Assistant: Codex (GPT-5)
+
+### Full Function Documentation Pass (`wcs_reproject.py`)
+- Added comprehensive docstrings for all helper functions that previously lacked complete documentation.
+- Expanded coverage to include parameter semantics, return values, supported choice enumerations (for example reprojection method and frame mapping), and behavior/invariant notes.
+- Documented internal metadata/coordinate-management helpers, including stale world-coordinate alias cleanup behavior in output assembly.
+- Added a docstring for the nested per-plane reprojection helper inside `_reproject_dataarray` to keep internal behavior explicit.
