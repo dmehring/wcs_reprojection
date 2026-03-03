@@ -124,6 +124,10 @@ Minimum test coverage themes for this project:
 - Error handling for missing metadata, unsupported methods, and malformed groups.
 - Flux/invariant checks appropriate to method/unit semantics.
 
+## User examples
+User examples are implemented in Jupyter notebooks in the `notebooks/` directory. These examples demonstrate typical use cases and workflows for the package. Notebooks should be generously commented and include Markdown cells that explain the purpose of each section, the expected behavior, and any assumptions being made. Users need to be
+spoon fed so write comments as if you are explaining to a first year graduate student.
+
 ## Practical Development Notes
 1. Prefer explicit coordinate handling and unit conversions in checks (e.g., pixel area weighting).
 2. When validating flux conservation across different pixel scales, compare area-weighted sums.
