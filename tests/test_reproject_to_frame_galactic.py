@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import xarray as xr
 from astropy import units as u
 from astropy.coordinates import SkyCoord
@@ -162,10 +163,10 @@ def test_peak_world_position_consistent_for_keep_grid_modes() -> None:
     """Peak world position should be consistent in both keep-grid modes."""
     src = _make_point_source_dataset()
     out_keep_false = reproject_to_frame(
-        src, "galactic", keep_grid=False, method="interp", order=1
+        src, "galactic", keep_grid=False, method="bilinear"
     )
     out_keep_true = reproject_to_frame(
-        src, "galactic", keep_grid=True, method="interp", order=1
+        src, "galactic", keep_grid=True, method="bilinear"
     )
 
     pixel_scale_arcsec = max(
@@ -185,7 +186,7 @@ def test_peak_world_position_consistent_for_keep_grid_modes() -> None:
 def test_legacy_world_input_alias_coords_are_not_copied_to_output() -> None:
     """Frame-reprojection output should drop stale world-coordinate alias coords."""
     src = _add_legacy_input_world_aliases(_make_point_source_dataset())
-    out = reproject_to_frame(src, "galactic", keep_grid=False, method="interp", order=1)
+    out = reproject_to_frame(src, "galactic", keep_grid=False, method="bilinear")
 
     assert "right_ascension_input" not in out.coords
     assert "declination_input" not in out.coords
@@ -198,8 +199,7 @@ def test_include_original_world_coords_are_pixelwise_transform_consistent() -> N
         src,
         "galactic",
         keep_grid=False,
-        method="interp",
-        order=1,
+        method="bilinear",
         include_original_world_coords=True,
     )
 
@@ -230,7 +230,7 @@ def test_include_original_world_coords_are_pixelwise_transform_consistent() -> N
 def test_keep_grid_false_galactic_axes_parallel_image_edges() -> None:
     """For keep_grid=False, Galactic lon/lat should align with image axes."""
     src = _make_point_source_dataset()
-    out = reproject_to_frame(src, "galactic", keep_grid=False, method="interp", order=1)
+    out = reproject_to_frame(src, "galactic", keep_grid=False, method="bilinear")
 
     glon = out["galactic_longitude"].values
     glat = out["galactic_latitude"].values
@@ -260,8 +260,7 @@ def test_reproject_to_frame_reprojects_all_spatial_vars_in_data_group() -> None:
         "galactic",
         data_group="base",
         keep_grid=False,
-        method="interp",
-        order=1,
+        method="bilinear",
     )
     out_model_single = reproject_to_frame(
         src,
@@ -269,8 +268,7 @@ def test_reproject_to_frame_reprojects_all_spatial_vars_in_data_group() -> None:
         data_var="MODEL",
         data_group=None,
         keep_grid=False,
-        method="interp",
-        order=1,
+        method="bilinear",
     )
 
     assert "SKY" in out_group.data_vars
@@ -297,8 +295,7 @@ def test_reproject_to_frame_falls_back_to_data_var_when_data_group_missing() -> 
         data_var="SKY",
         data_group="base",
         keep_grid=False,
-        method="interp",
-        order=1,
+        method="bilinear",
     )
 
     assert "SKY" in out.data_vars
@@ -339,7 +336,7 @@ def test_beam_pa_change_matches_source_major_axis_rotation() -> None:
         },
     )
 
-    out = reproject_to_frame(src, "galactic", keep_grid=False, method="interp", order=1)
+    out = reproject_to_frame(src, "galactic", keep_grid=False, method="bilinear")
 
     pa_src = _major_axis_pa_world(
         src, lon_name="right_ascension", lat_name="declination"
@@ -366,3 +363,23 @@ def test_beam_pa_change_matches_source_major_axis_rotation() -> None:
     # Keep tolerance modest to account for interpolation + moment-estimation noise.
     # In this pipeline, beam-PA update has opposite sign to source-axis world rotation.
     assert abs(np.rad2deg(_wrap_half_turn(beam_delta + src_delta))) < 1.0
+
+
+def test_default_method_is_bilinear_and_selectors_are_equivalent() -> None:
+    """Default method and bilinear selectors should be equivalent."""
+    src = _make_point_source_dataset()
+    out_default = reproject_to_frame(src, "galactic", keep_grid=False)
+    out_int = reproject_to_frame(src, "galactic", keep_grid=False, method=1)
+    out_name = reproject_to_frame(src, "galactic", keep_grid=False, method="bilinear")
+
+    np.testing.assert_allclose(out_default["SKY"].values, out_int["SKY"].values)
+    np.testing.assert_allclose(out_default["SKY"].values, out_name["SKY"].values)
+
+
+def test_invalid_method_selector_raises_value_error() -> None:
+    """Invalid interpolation/method selectors should raise a clear ValueError."""
+    src = _make_point_source_dataset()
+    with pytest.raises(ValueError):
+        reproject_to_frame(src, "galactic", keep_grid=False, method="blah")
+    with pytest.raises(ValueError):
+        reproject_to_frame(src, "galactic", keep_grid=False, method=5)

@@ -44,8 +44,7 @@ def reproject_to_match(
     data_group: str | None = "base",
     dim_a: str = "l",
     dim_b: str = "m",
-    method: str = "interp",
-    order: int = 1,
+    method: str | int = "bilinear",
 ) -> xr.Dataset | xr.DataArray:
     """
     Reproject `source` onto the WCS + grid of `target`.
@@ -60,13 +59,21 @@ def reproject_to_match(
     data_group
         Data group name for Dataset inputs (default: "base"). If available in
         `source.attrs["data_groups"]`, all group variables that include both
-        spatial dims are reprojected. Set to None to force single-variable mode.
+        spatial dims are reprojected. If group metadata is missing or cannot be
+        resolved to reprojectable spatial variables, fallback is single-variable
+        mode using `data_var`. Set to None to force single-variable mode.
     dim_a, dim_b
         Spatial dimensions (default: l/m).
     method
-        Reprojection algorithm: "interp", "exact", or "adaptive".
-    order
-        Interpolation order for "interp" (0=nearest, 1=bilinear, 3=cubic).
+        Reprojection selector.
+        Supported values are:
+        - `"exact"`: exact footprint-overlap reprojection, best for
+          flux-conserving workflows.
+        - `"adaptive"`: adaptive resampling reprojection.
+        - interpolation selectors directly:
+          `"nearest-neighbor"`/`0`, `"bilinear"`/`1`,
+          `"biquadratic"`/`2`, `"bicubic"`/`3`.
+        String values are case-independent.
 
     Returns
     -------
@@ -80,7 +87,7 @@ def reproject_to_match(
     _require_optional_deps()
 
     if isinstance(source, xr.Dataset):
-        group_vars = _get_group_spatial_vars(
+        group_vars = _resolve_reproject_group_vars_with_fallback(
             source, data_group=data_group, dim_a=dim_a, dim_b=dim_b
         )
         if group_vars is not None:
@@ -91,7 +98,6 @@ def reproject_to_match(
                 dim_a=dim_a,
                 dim_b=dim_b,
                 method=method,
-                order=order,
             )
 
     src = _get_dataarray(source, data_var)
@@ -111,7 +117,6 @@ def reproject_to_match(
         dim_a=dim_a,
         dim_b=dim_b,
         method=method,
-        order=order,
     )
 
     return _attach_metadata(source, target, out, data_var=data_var)
@@ -125,8 +130,7 @@ def reproject_to_frame(
     data_group: str | None = "base",
     dim_a: str = "l",
     dim_b: str = "m",
-    method: str = "interp",
-    order: int = 1,
+    method: str | int = "bilinear",
     keep_grid: bool = False,
     include_original_world_coords: bool = False,
 ) -> xr.Dataset | xr.DataArray:
@@ -161,9 +165,15 @@ def reproject_to_frame(
     dim_a, dim_b
         Spatial dimensions (default: l/m).
     method
-        Reprojection algorithm: "interp", "exact", or "adaptive".
-    order
-        Interpolation order for "interp" (0=nearest, 1=bilinear, 3=cubic).
+        Reprojection selector.
+        Supported values are:
+        - `"exact"`: exact footprint-overlap reprojection, best for
+          flux-conserving workflows.
+        - `"adaptive"`: adaptive resampling reprojection.
+        - interpolation selectors directly:
+          `"nearest-neighbor"`/`0`, `"bilinear"`/`1`,
+          `"biquadratic"`/`2`, `"bicubic"`/`3`.
+        String values are case-independent.
     keep_grid
         Controls whether the output uses the input pixel-coordinate lattice or a
         newly centered lattice:
@@ -197,12 +207,9 @@ def reproject_to_frame(
     frame = frame.lower()
 
     if isinstance(source, xr.Dataset):
-        try:
-            group_vars = _get_group_spatial_vars(
-                source, data_group=data_group, dim_a=dim_a, dim_b=dim_b
-            )
-        except (KeyError, ValueError):
-            group_vars = None
+        group_vars = _resolve_reproject_group_vars_with_fallback(
+            source, data_group=data_group, dim_a=dim_a, dim_b=dim_b
+        )
         if group_vars is not None:
             return _reproject_dataset_group_to_frame(
                 source,
@@ -211,7 +218,6 @@ def reproject_to_frame(
                 dim_a=dim_a,
                 dim_b=dim_b,
                 method=method,
-                order=order,
                 keep_grid=keep_grid,
                 include_original_world_coords=include_original_world_coords,
             )
@@ -252,7 +258,6 @@ def reproject_to_frame(
         dim_a=dim_a,
         dim_b=dim_b,
         method=method,
-        order=order,
     )
 
     result = _attach_metadata(
@@ -868,6 +873,41 @@ def _get_group_spatial_vars(
     return spatial_vars
 
 
+def _resolve_reproject_group_vars_with_fallback(
+    ds: xr.Dataset, *, data_group: str | None, dim_a: str, dim_b: str
+) -> list[str] | None:
+    """Resolve data-group spatial vars, falling back to single-variable mode.
+
+    Parameters
+    ----------
+    ds
+        Source Dataset.
+    data_group
+        Requested group name, or `None` to skip group selection.
+    dim_a
+        First required spatial dimension.
+    dim_b
+        Second required spatial dimension.
+
+    Returns
+    -------
+    list[str] | None
+        Spatial group variables when resolution succeeds, otherwise `None` so
+        callers can fall back to `data_var` mode.
+
+    Notes
+    -----
+    This helper intentionally catches group-resolution `KeyError`/`ValueError`
+    to keep `reproject_to_match` and `reproject_to_frame` behavior consistent.
+    """
+    try:
+        return _get_group_spatial_vars(
+            ds, data_group=data_group, dim_a=dim_a, dim_b=dim_b
+        )
+    except (KeyError, ValueError):
+        return None
+
+
 def _reproject_dataset_group_to_match(
     source: xr.Dataset,
     target: xr.Dataset | xr.DataArray,
@@ -875,8 +915,7 @@ def _reproject_dataset_group_to_match(
     data_vars: list[str],
     dim_a: str,
     dim_b: str,
-    method: str,
-    order: int,
+    method: str | int,
 ) -> xr.Dataset:
     """Reproject all selected variables in a source Dataset data group.
 
@@ -896,11 +935,10 @@ def _reproject_dataset_group_to_match(
     dim_b
         Second spatial pixel dimension.
     method
-        Reprojection method. Supported choices: `"interp"`, `"exact"`,
-        `"adaptive"`.
-    order
-        Interpolation order for `"interp"` method (`0`, `1`, `3`, etc.).
-
+        Reprojection selector. Supported values:
+        `"exact"`, `"adaptive"`, interpolation names
+        (`"nearest-neighbor"`, `"bilinear"`, `"biquadratic"`, `"bicubic"`),
+        or interpolation integer IDs (`0`, `1`, `2`, `3`).
     Returns
     -------
     xr.Dataset
@@ -926,7 +964,6 @@ def _reproject_dataset_group_to_match(
             dim_a=dim_a,
             dim_b=dim_b,
             method=method,
-            order=order,
         )
 
     if isinstance(target, xr.Dataset):
@@ -947,8 +984,7 @@ def _reproject_dataset_group_to_frame(
     data_vars: list[str],
     dim_a: str,
     dim_b: str,
-    method: str,
-    order: int,
+    method: str | int,
     keep_grid: bool,
     include_original_world_coords: bool,
 ) -> xr.Dataset:
@@ -968,10 +1004,10 @@ def _reproject_dataset_group_to_frame(
     dim_b
         Second spatial pixel dimension.
     method
-        Reprojection method. Supported choices: `"interp"`, `"exact"`,
-        `"adaptive"`.
-    order
-        Interpolation order for `"interp"` method (`0`, `1`, `3`, etc.).
+        Reprojection selector. Supported values:
+        `"exact"`, `"adaptive"`, interpolation names
+        (`"nearest-neighbor"`, `"bilinear"`, `"biquadratic"`, `"bicubic"`),
+        or interpolation integer IDs (`0`, `1`, `2`, `3`).
     keep_grid
         If `True`, keep input spatial coordinate arrays. If `False`, rebuild a
         same-sized centered offset grid with the same pixel spacing.
@@ -1035,7 +1071,6 @@ def _reproject_dataset_group_to_frame(
             dim_a=dim_a,
             dim_b=dim_b,
             method=method,
-            order=order,
         )
         _update_frame_attrs(out_var, frame, ref_dir_override=ref_dir)
         out_ds[var] = out_var
@@ -1551,8 +1586,7 @@ def _reproject_dataarray(
     *,
     dim_a: str,
     dim_b: str,
-    method: str,
-    order: int,
+    method: str | int,
 ) -> xr.DataArray:
     """Reproject a DataArray plane-by-plane across non-spatial dimensions.
 
@@ -1573,10 +1607,10 @@ def _reproject_dataarray(
     dim_b
         Second spatial core dimension name in `src`.
     method
-        Reprojection method. Supported choices: `"interp"`, `"exact"`,
-        `"adaptive"`.
-    order
-        Interpolation order used only for `"interp"` (`0`, `1`, `3`, etc.).
+        Reprojection selector. Supported values:
+        `"exact"`, `"adaptive"`, interpolation names
+        (`"nearest-neighbor"`, `"bilinear"`, `"biquadratic"`, `"bicubic"`),
+        or interpolation integer IDs (`0`, `1`, `2`, `3`).
 
     Returns
     -------
@@ -1589,7 +1623,7 @@ def _reproject_dataarray(
     Reprojection kernels operate in `(y, x)` order, so each `(dim_a, dim_b)` plane
     is transposed before/after calling `reproject`.
     """
-    reproject_func = _select_reproject_func(method)
+    reproject_func, method_kind, interp_order = _select_reproject_func(method)
     shape_out = (coord_b_out.size, coord_a_out.size)
     out_dim_a = f"{dim_a}__out"
     out_dim_b = f"{dim_b}__out"
@@ -1612,9 +1646,12 @@ def _reproject_dataarray(
         # dims, transpose to (dim_b, dim_a) for reprojection, then transpose
         # back so output keeps (dim_a, dim_b).
         arr_for_reproject = arr.T
-        if method == "interp":
+        if method_kind == "interp":
             out, _ = reproject_func(
-                (arr_for_reproject, wcs_in), wcs_out, shape_out=shape_out, order=order
+                (arr_for_reproject, wcs_in),
+                wcs_out,
+                shape_out=shape_out,
+                order=interp_order,
             )
         else:
             out, _ = reproject_func(
@@ -1642,34 +1679,89 @@ def _reproject_dataarray(
     return out
 
 
-def _select_reproject_func(method: str):
-    """Return the reproject backend function for a method selector.
+def _parse_interp_order(order: int | str) -> int:
+    """Normalize interpolation selector into canonical integer order.
 
     Parameters
     ----------
-    method
-        Method selector. Supported choices are:
-        - `"interp"`: interpolation-based reprojection,
-        - `"exact"`: flux-conserving footprint overlap,
-        - `"adaptive"`: adaptive resampling.
+    order
+        Interpolation selector as integer or named string.
 
     Returns
     -------
-    callable
-        Reproject function object from the `reproject` package.
+    int
+        Canonical interpolation order in `{0, 1, 2, 3}`.
 
     Raises
     ------
     ValueError
-        If `method` is not one of the supported choices.
+        If `order` is not supported.
     """
-    method_lower = method.lower()
-    if method_lower == "interp":
-        return reproject_interp
-    if method_lower == "exact":
-        return reproject_exact
-    if method_lower == "adaptive":
-        return reproject_adaptive
+    if isinstance(order, int):
+        if order in {0, 1, 2, 3}:
+            return order
+        raise ValueError(
+            f"Unsupported interpolation order={order!r}. Expected 0, 1, 2, or 3."
+        )
+
+    order_key = str(order).lower()
+    name_to_order = {
+        "nearest-neighbor": 0,
+        "bilinear": 1,
+        "biquadratic": 2,
+        "bicubic": 3,
+    }
+    if order_key in name_to_order:
+        return name_to_order[order_key]
     raise ValueError(
-        f"Unknown method={method!r}. Expected 'interp', 'exact', or 'adaptive'."
+        "Unsupported interpolation order selector. Expected one of "
+        "'nearest-neighbor', 'bilinear', 'biquadratic', 'bicubic' or 0/1/2/3."
+    )
+
+
+def _select_reproject_func(method: str | int) -> tuple[callable, str, int | None]:
+    """Resolve reprojection backend and interpolation order from user selectors.
+
+    Parameters
+    ----------
+    method
+        Reprojection selector. Supported values:
+        - `"exact"`: flux-conserving footprint overlap.
+        - `"adaptive"`: adaptive resampling.
+        - interpolation selectors directly:
+          `"nearest-neighbor"`/`0`, `"bilinear"`/`1`,
+          `"biquadratic"`/`2`, `"bicubic"`/`3`.
+        String values are case-independent.
+
+    Returns
+    -------
+    tuple[callable, str, int | None]
+        Tuple of `(backend_func, method_kind, interp_order)` where:
+        - `backend_func` is a reproject backend function,
+        - `method_kind` is `"interp"`, `"exact"`, or `"adaptive"`,
+        - `interp_order` is an integer in `{0,1,2,3}` for interpolation mode,
+          otherwise `None`.
+
+    Raises
+    ------
+    ValueError
+        If `method` selector is unsupported.
+    """
+    if isinstance(method, int):
+        interp_order = _parse_interp_order(method)
+        return reproject_interp, "interp", interp_order
+
+    method_lower = str(method).lower()
+    if method_lower in {"nearest-neighbor", "bilinear", "biquadratic", "bicubic"}:
+        interp_order = _parse_interp_order(method_lower)
+        return reproject_interp, "interp", interp_order
+
+    if method_lower == "exact":
+        return reproject_exact, "exact", None
+    if method_lower == "adaptive":
+        return reproject_adaptive, "adaptive", None
+    raise ValueError(
+        f"Unknown method={method!r}. Expected 'exact', 'adaptive', "
+        "an interpolation name ('nearest-neighbor', 'bilinear', "
+        "'biquadratic', 'bicubic'), or 0/1/2/3."
     )

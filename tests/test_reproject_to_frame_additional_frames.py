@@ -49,7 +49,7 @@ def test_reproject_to_geocentric_true_ecliptic_writes_ecliptic_world_coords() ->
     """Geocentric true ecliptic reprojection should emit ecliptic coordinates."""
     src = _make_point_source_dataset()
     out = reproject_to_frame(
-        src, "geocentrictrueecliptic", keep_grid=False, method="interp"
+        src, "geocentrictrueecliptic", keep_grid=False, method="bilinear"
     )
 
     assert "ecliptic_longitude" in out.coords
@@ -70,7 +70,7 @@ def test_include_original_world_coords_for_ecliptic_round_trips_to_fk5() -> None
         src,
         "geocentrictrueecliptic",
         keep_grid=False,
-        method="interp",
+        method="bilinear",
         include_original_world_coords=True,
     )
 

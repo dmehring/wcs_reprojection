@@ -218,3 +218,50 @@
 - Added regression tests validating:
   - all group spatial variables are reprojected in group mode, and
   - unresolved/missing group selection falls back to `data_var`.
+
+## 2026-03-02 23:58 UTC | Assistant: Codex (GPT-5)
+
+### Docstring Clarification: `order` Supports String and Integer Forms
+- Updated interpolation-order documentation in `wcs_reproject.py` for all relevant functions to explicitly state accepted string and integer equivalents for `method="interp"`.
+- Added explicit mapping:
+  - `"nearest-neighbor"` <-> `0`
+  - `"bilinear"` <-> `1`
+  - `"biquadratic"` <-> `2`
+  - `"bicubic"` <-> `3`
+
+## 2026-03-03 00:10 UTC | Assistant: Codex (GPT-5)
+
+### API Simplification: Removed `order`, Expanded `method` Selector
+- Removed the `order` parameter from `reproject_to_match` and `reproject_to_frame` (and internal helpers) since this is pre-release and no backward compatibility is required.
+- Consolidated interpolation selection into `method`:
+  - interpolation IDs: `0`, `1`, `2`, `3`
+  - interpolation names: `"nearest-neighbor"`, `"bilinear"`, `"biquadratic"`, `"bicubic"`
+  - non-interp methods: `"interp"` (defaults to bilinear), `"exact"`, `"adaptive"`
+- Updated docstrings and type hints to reflect method-only selector behavior and explicit algorithm descriptions.
+- Added regression tests verifying selector equivalence (`"interp"` == `1` == `"bilinear"`) and invalid-selector failures.
+
+## 2026-03-03 00:14 UTC | Assistant: Codex (GPT-5)
+
+### Method Selector Simplification: Default `bilinear`, Removed `"interp"` Alias
+- Changed default `method` for `reproject_to_match` and `reproject_to_frame` to `"bilinear"` so interpolation behavior is explicit by default.
+- Removed support for the `"interp"` method alias.
+- Kept supported `method` selectors as:
+  - interpolation IDs: `0`, `1`, `2`, `3`
+  - interpolation names: `"nearest-neighbor"`, `"bilinear"`, `"biquadratic"`, `"bicubic"`
+  - non-interpolation methods: `"exact"`, `"adaptive"`
+- Updated tests to validate default-is-bilinear behavior and selector equivalence.
+
+## 2026-03-03 00:25 UTC | Assistant: Codex (GPT-5)
+
+### Consistency Refactor: Unified `data_group` Fallback in Match/Frame APIs
+- Refactored shared Dataset group-selection setup into `_resolve_reproject_group_vars_with_fallback(...)`.
+- Updated `reproject_to_match` to use the same fallback behavior as `reproject_to_frame`: if group metadata is missing or group resolution is invalid/unreprojectable, fallback to `data_var` single-variable mode.
+- Updated `reproject_to_match` docstring to document fallback behavior explicitly.
+- Added new regression tests in `tests/test_reproject_to_match_data_group.py` verifying:
+  - all spatial group vars are reprojected when a valid group is provided, and
+  - unresolved group definitions fall back to `data_var` mode.
+
+## 2026-03-03 00:30 UTC | Assistant: Codex (GPT-5)
+
+### Open Item: FLAG Array Reprojection Policy
+- Noted unresolved follow-up: define and implement explicit boolean FLAG-array reprojection semantics (boolean-in/boolean-out), including policy choice (`any`/`majority`/`all`), coverage behavior, and tests.
