@@ -386,3 +386,171 @@
 - Updated variable names and markdown text across `notebooks/reproject_to_match_minimal_same_frame.ipynb` to match that nomenclature.
 - Updated world-coordinate peak agreement tolerance to half the larger pixel size:
   - `0.5 * max(input_cell_arcsec, template_cell_arcsec)`.
+
+## 2026-03-03 13:39 UTC | Assistant: Codex (GPT-5)
+
+### New Notebook: FK5 Input Reprojected to Galactic Template with Peak World-Coordinate Validation
+- Added `notebooks/reproject_to_match_fk5_input_to_galactic_template.ipynb` as a user-facing, step-by-step example.
+- Implemented workflow:
+  - build a previous FK5 template,
+  - build the FK5 input image exactly as in the prior notebook,
+  - convert the previous FK5 template reference direction to Galactic,
+  - build a new Galactic template from that transformed reference direction,
+  - run `reproject_to_match` from FK5 input to Galactic template.
+- Added numerical validations and readable tabular output to show:
+  - output Galactic coordinate grids are identical to template grids,
+  - input-peak FK5->Galactic coordinates (via Astropy) match output-peak Galactic coordinates,
+  - FK5 RA/Dec coordinates are attached on the output grid (`input_frame_right_ascension`, `input_frame_declination`) and peak RA/Dec are preserved after transformation.
+- Ensured notebook readability conventions:
+  - detailed markdown explanations,
+  - inline comments in complex cells,
+  - tables with aligned columns,
+  - conversion of numpy scalar prints to Python primitive values.
+- Cleared all notebook outputs and execution counts for clean commit state.
+
+## 2026-03-03 13:54 UTC | Assistant: Codex (GPT-5)
+
+### API Update: `reproject_to_match` Supports `include_original_world_coords`
+- Added `include_original_world_coords: bool = False` to `reproject_to_match(...)`.
+- Implemented both single-variable and data-group paths so output can include transformed `original_*` world-coordinate arrays for the source frame on the output grid.
+- In match mode, when `include_original_world_coords=True`:
+  - output coordinates are ensured to contain canonical target-frame world coordinates,
+  - source-frame coordinates are added as `original_<name>` arrays using pixel-wise frame transforms.
+- Updated docstrings for `reproject_to_match` and `_reproject_dataset_group_to_match` to describe new behavior.
+
+### Tests
+- Added regression coverage in `tests/test_reproject_to_match_data_group.py`:
+  - `test_reproject_to_match_include_original_world_coords_transform_consistent`
+  - verifies output Galactic coordinates + `original_right_ascension`/`original_declination` are present and Astropy-transform consistent pixel-wise.
+
+### Notebook Update
+- Updated `notebooks/reproject_to_match_fk5_input_to_galactic_template.ipynb` to use:
+  - `reproject_to_match(..., include_original_world_coords=True)`
+- Removed explicit manual FK5-coordinate construction in section 11 and replaced it with validation of coordinates carried by the API output (`original_right_ascension`, `original_declination`).
+- Kept outputs cleared for clean commit diffs.
+
+## 2026-03-03 14:03 UTC | Assistant: Codex (GPT-5)
+
+### Internal Refactor: Shared Reprojection Helpers for Match/Frame Paths
+- Refactored duplicated setup/finalization logic in `wcs_reproject.py` used by both `reproject_to_match` and `reproject_to_frame`.
+- Added `_maybe_add_original_world_coords(...)` and replaced duplicated blocks in:
+  - `reproject_to_match`
+  - `reproject_to_frame`
+  - `_reproject_dataset_group_to_match`
+  - `_reproject_dataset_group_to_frame`
+- Added `_build_target_wcs_for_frame_reprojection(...)` and replaced duplicated frame-target WCS construction logic (including `keep_grid` handling) in:
+  - `reproject_to_frame`
+  - `_reproject_dataset_group_to_frame`
+- Behavior remains unchanged; refactor reduces maintenance duplication and keeps include-original-coordinate behavior consistent across APIs.
+
+### Validation
+- Syntax check: `python -m compileall -q wcs_reproject.py`
+- Tests: `pytest -q tests/test_reproject_to_match_data_group.py tests/test_reproject_to_frame_galactic.py`
+  - Result: `12 passed`
+
+## 2026-03-03 14:07 UTC | Assistant: Codex (GPT-5)
+
+### Refactor Follow-up: Remove `maybe` Guard From Helper and Gate at Call Sites
+- Updated `wcs_reproject.py` to move `include_original_world_coords` gating back to callers for readability.
+- Renamed helper from `_maybe_add_original_world_coords(...)` to `_add_original_world_coords_to_output(...)`.
+- Helper now always performs the transform-and-attach operation (no internal early-return guard).
+- Updated all call sites accordingly in:
+  - `reproject_to_match`
+  - `reproject_to_frame`
+  - `_reproject_dataset_group_to_match`
+  - `_reproject_dataset_group_to_frame`
+
+### Validation
+- Syntax check: `python -m compileall -q wcs_reproject.py`
+- Tests: `pytest -q tests/test_reproject_to_match_data_group.py tests/test_reproject_to_frame_galactic.py`
+  - Result: `12 passed`
+
+## 2026-03-03 14:22 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Consistency Update: Explicit SKY Attachment After Skeleton Creation
+- Updated reprojection notebooks to consistently handle environments where
+  `make_empty_sky_image(...)` returns coordinate skeletons without data variables.
+
+Changes made:
+- `notebooks/reproject_to_match_minimal_same_frame.ipynb`
+  - Added `ensure_sky_var(...)` helper.
+  - Replaced direct `SKY` DataArray replacement with explicit ensure + in-place data assignment.
+  - Ensures `SKY` carries `coordinate_system_info` metadata when created.
+- `notebooks/wcs_reprojection_examples.ipynb`
+  - Updated `_attach_sky(...)` to copy `coordinate_system_info` from dataset attrs to `SKY` attrs.
+  - Keeps reprojection helpers frame-aware when operating on `SKY` DataArrays.
+
+Verification:
+- Syntax-checked both notebooks' code cells.
+- Cleared all outputs/execution counts in updated notebooks.
+
+## 2026-03-03 14:33 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Runtime Validation via Temporary Scripts (`nbconvert`)
+- Added a runtime validation pass that converts notebooks to temporary Python scripts under `/tmp` and executes them with:
+  - `PYTHONPATH` set to repository root,
+  - `MPLBACKEND=Agg` for non-interactive plotting.
+- This was run for notebooks modified during current reprojection-notebook development.
+
+### Compatibility Cleanup Found During Validation
+- `notebooks/wcs_reprojection_examples.ipynb` updated to current API usage:
+  - replaced legacy `method='interp', order=1` with `method='bilinear'`,
+  - replaced `keep_input_world_coords=True` with `include_original_world_coords=True`,
+  - updated related markdown wording.
+- `notebooks/plot_astro_images_with_matplotlib.ipynb` was already updated earlier in this session for modern `reproject_to_frame` args and self-contained `galactic` setup when cells are run independently.
+
+## 2026-03-03 15:01 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Fix: `reproject_to_match_minimal_same_frame.ipynb` World-Coordinate Validation Regression
+- Root cause: validation cells were building output WCS from `out["SKY"]` variable metadata, which in match mode can retain source-frame reference metadata on the data variable.
+- This made world-mapping diagnostics inconsistent with the actual template-driven output coordinate grid and caused the final world-separation assertion to fail.
+- Fix applied:
+  - Updated output plotting and validation cells (sections 7, 9, 10) to use template/grid WCS as the authoritative output WCS in `reproject_to_match` workflows.
+- Validation:
+  - `nbconvert` to `/tmp` script and execution with `PYTHONPATH=$PWD MPLBACKEND=Agg` now passes for this notebook.
+
+## 2026-03-03 15:19 UTC | Assistant: Codex (GPT-5)
+
+### Schema Compliance Fix: Remove Variable-Level CSI Dependence
+- Corrected approach to respect image schema where `coordinate_system_info` is Dataset-level metadata.
+- Library updates in `wcs_reproject.py`:
+  - Added `_with_dataset_csi_if_missing(...)` to inject Dataset CSI into temporary DataArray views only when needed for internal WCS construction.
+  - Updated `_get_dataarray(...)` and `_get_target_grid_dataarray(...)` to use that helper.
+  - Updated group reprojection internals to use CSI-enriched views without mutating data-variable attrs.
+- Added regression test:
+  - `test_reproject_to_match_uses_dataset_level_csi_when_sky_lacks_csi`
+  - verifies `reproject_to_match` works when `SKY` lacks CSI attrs but Dataset has CSI.
+
+### Notebook Cleanup
+- Removed explicit copies of `coordinate_system_info` into `SKY` attrs from notebooks:
+  - `reproject_to_match_minimal_same_frame.ipynb`
+  - `reproject_to_match_fk5_input_to_galactic_template.ipynb`
+  - `wcs_reprojection_examples.ipynb`
+  - `plot_astro_images_with_matplotlib.ipynb`
+- Updated WCS-building calls in reprojection notebooks to prefer Dataset inputs for schema-consistent CSI resolution.
+
+### Validation
+- Python/tests:
+  - `python -m compileall -q wcs_reproject.py tests/test_reproject_to_match_data_group.py`
+  - `pytest -q tests/test_reproject_to_match_data_group.py tests/test_reproject_to_frame_galactic.py`
+  - result: `13 passed`
+- Notebook runtime validation (`nbconvert` -> `/tmp` script -> execute with `PYTHONPATH=$PWD MPLBACKEND=Agg`):
+  - `reproject_to_match_minimal_same_frame.ipynb`: PASS
+  - `wcs_reprojection_examples.ipynb`: PASS
+  - `plot_astro_images_with_matplotlib.ipynb`: PASS
+  - `reproject_to_match_fk5_input_to_galactic_template.ipynb`: FAIL (peak-preservation assertion for one edge-clipped source remains to be tuned)
+
+## 2026-03-03 15:44 UTC | Assistant: Codex (GPT-5)
+
+### Notebook Border Update for Source-In-Frame Output
+- Updated both reprojection walkthrough notebooks to include explicit border padding around the image:
+  - `base_n_l/base_n_m = 192`
+  - `border_pixels = 32`
+  - `n_l/n_m = base + 2*border`
+- To preserve original relative source geometry after enlarging images, shifted Gaussian source centers by `border_pixels` in both notebooks.
+- Fixed FK5->Galactic RA/Dec validation mapping in the Galactic notebook by converting FK5 peak coordinates to Galactic before `wcs_world2pix` on the Galactic output WCS.
+
+### Validation
+- Notebook runtime validation (`nbconvert` -> `/tmp` script -> execute with `PYTHONPATH=$PWD MPLBACKEND=Agg`):
+  - `notebooks/reproject_to_match_minimal_same_frame.ipynb`: PASS
+  - `notebooks/reproject_to_match_fk5_input_to_galactic_template.ipynb`: PASS

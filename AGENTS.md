@@ -105,6 +105,10 @@ Examples are implemented in Jupyter notebooks in the `notebooks/` directory. Sta
 Clearly document each section.
 Use both code comments and Markdown cells to explain purpose and expected behavior.
 Verify that the output of each example matches expected results (e.g., shapes, coordinate values, metadata updates). Do not just show plots; include numerical checks where possible.
+Before committing, validate each modified notebook by converting it to a temporary Python script and executing it successfully:
+- `jupyter nbconvert --to script <notebook.ipynb> --output /tmp/<name>_nbtmp`
+- `PYTHONPATH=$PWD MPLBACKEND=Agg python /tmp/<name>_nbtmp.py`
+Record pass/fail status in your update; if a notebook fails, fix it or clearly document why it is blocked.
 Before committing, ensure that output cells have been cleared to avoid large diffs and to ensure that examples run correctly in a clean environment.
 
 ## Testing Standards
