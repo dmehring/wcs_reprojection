@@ -45,6 +45,7 @@ def reproject_to_match(
     dim_a: str = "l",
     dim_b: str = "m",
     method: str | int = "bilinear",
+    include_original_world_coords: bool = False,
 ) -> xr.Dataset | xr.DataArray:
     """
     Reproject `source` onto the WCS + grid of `target`.
@@ -74,6 +75,14 @@ def reproject_to_match(
           `"nearest-neighbor"`/`0`, `"bilinear"`/`1`,
           `"biquadratic"`/`2`, `"bicubic"`/`3`.
         String values are case-independent.
+    include_original_world_coords
+        If True, include additional world-coordinate arrays for the original
+        source frame on the output grid. These arrays are computed by
+        transforming every output-pixel world coordinate from the target frame
+        back into the source reference frame, so the mapping between target-
+        frame and original-frame coordinates is one-to-one and pixel-wise
+        consistent. Added coordinates use `original_` prefixes (for example
+        `original_right_ascension`, `original_declination`).
 
     Returns
     -------
@@ -91,14 +100,16 @@ def reproject_to_match(
             source, data_group=data_group, dim_a=dim_a, dim_b=dim_b
         )
         if group_vars is not None:
-            return _reproject_dataset_group_to_match(
+            out_ds = _reproject_dataset_group_to_match(
                 source,
                 target,
                 data_vars=group_vars,
                 dim_a=dim_a,
                 dim_b=dim_b,
                 method=method,
+                include_original_world_coords=include_original_world_coords,
             )
+            return _strip_dataset_variable_csi(out_ds)
 
     src = _get_dataarray(source, data_var)
     tgt = _get_target_grid_dataarray(
@@ -119,7 +130,22 @@ def reproject_to_match(
         method=method,
     )
 
-    return _attach_metadata(source, target, out, data_var=data_var)
+    result = _attach_metadata(source, target, out, data_var=data_var)
+
+    if include_original_world_coords:
+        tgt_frame = _reference_frame_from_xradio(tgt)
+        src_frame = _reference_frame_from_xradio(src)
+        result = _add_original_world_coords_to_output(
+            result,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            output_wcs=tgt_wcs.wcs,
+            output_frame=tgt_frame,
+            original_frame=src_frame,
+        )
+    if isinstance(result, xr.Dataset):
+        result = _strip_dataset_variable_csi(result)
+    return result
 
 
 def reproject_to_frame(
@@ -211,7 +237,7 @@ def reproject_to_frame(
             source, data_group=data_group, dim_a=dim_a, dim_b=dim_b
         )
         if group_vars is not None:
-            return _reproject_dataset_group_to_frame(
+            out_ds = _reproject_dataset_group_to_frame(
                 source,
                 frame=frame,
                 data_vars=group_vars,
@@ -221,33 +247,18 @@ def reproject_to_frame(
                 keep_grid=keep_grid,
                 include_original_world_coords=include_original_world_coords,
             )
+            return _strip_dataset_variable_csi(out_ds)
 
     src = _get_dataarray(source, data_var)
     src_wcs = build_wcs_from_xradio(src, dim_a=dim_a, dim_b=dim_b)
 
-    ref_dir = _transform_reference_direction(src, frame)
-
-    if keep_grid:
-        tgt_wcs = build_wcs_from_xradio(
-            src,
-            dim_a=dim_a,
-            dim_b=dim_b,
-            frame_override=frame,
-            ref_dir_override=ref_dir,
-        )
-    else:
-        # Same shape and pixel size, but re-center the reference direction in
-        # the target frame.
-        coord_a, coord_b = _coords_for_same_pixel_size(src, dim_a=dim_a, dim_b=dim_b)
-        tgt_wcs = build_wcs_from_xradio(
-            src,
-            dim_a=dim_a,
-            dim_b=dim_b,
-            frame_override=frame,
-            ref_dir_override=ref_dir,
-            coord_a=coord_a,
-            coord_b=coord_b,
-        )
+    ref_dir, tgt_wcs = _build_target_wcs_for_frame_reprojection(
+        src,
+        frame=frame,
+        keep_grid=keep_grid,
+        dim_a=dim_a,
+        dim_b=dim_b,
+    )
 
     out = _reproject_dataarray(
         src,
@@ -277,15 +288,17 @@ def reproject_to_frame(
     )
     if include_original_world_coords:
         src_frame = _reference_frame_from_xradio(src)
-        result = _add_original_world_coords(
+        result = _add_original_world_coords_to_output(
             result,
             dim_a=dim_a,
             dim_b=dim_b,
-            from_frame=frame,
-            to_frame=src_frame,
+            output_wcs=tgt_wcs.wcs,
+            output_frame=frame,
+            original_frame=src_frame,
         )
     if isinstance(result, xr.Dataset):
         result = _rotate_beam_pas_for_frame_change(source, result, frame=frame)
+        result = _strip_dataset_variable_csi(result)
     return result
 
 
@@ -339,8 +352,71 @@ def _get_dataarray(obj: xr.Dataset | xr.DataArray, data_var: str) -> xr.DataArra
                 f"Dataset missing data_var={data_var!r}. "
                 f"Available: {list(obj.data_vars)}"
             )
-        return obj[data_var]
+        return _with_dataset_csi_if_missing(obj, obj[data_var])
     return obj
+
+
+def _with_dataset_csi_if_missing(ds: xr.Dataset, da: xr.DataArray) -> xr.DataArray:
+    """Return a DataArray view with Dataset CSI injected when variable CSI is absent.
+
+    Parameters
+    ----------
+    ds
+        Parent Dataset that may carry `attrs["coordinate_system_info"]`.
+    da
+        Child DataArray selected from `ds`.
+
+    Returns
+    -------
+    xr.DataArray
+        `da` unchanged when it already has `coordinate_system_info` or Dataset
+        metadata is missing; otherwise a shallow copy of `da` with
+        Dataset-level `coordinate_system_info` injected into attrs.
+
+    Notes
+    -----
+    This helper is intentionally non-mutating for schema compatibility:
+    Dataset-level coordinate-system metadata remains authoritative, and data
+    variables are not modified in place.
+    """
+    if "coordinate_system_info" in da.attrs:
+        return da
+    if "coordinate_system_info" not in ds.attrs:
+        return da
+
+    out = da.copy(deep=False)
+    attrs = dict(out.attrs)
+    attrs["coordinate_system_info"] = ds.attrs["coordinate_system_info"]
+    out.attrs = attrs
+    return out
+
+
+def _strip_dataset_variable_csi(ds: xr.Dataset) -> xr.Dataset:
+    """Return a Dataset with variable-level CSI removed from all data variables.
+
+    Parameters
+    ----------
+    ds
+        Dataset whose data-variable attrs may contain
+        `coordinate_system_info`.
+
+    Returns
+    -------
+    xr.Dataset
+        Shallow-copied Dataset where each data variable has
+        `coordinate_system_info` removed from attrs. Dataset-level CSI metadata
+        is left unchanged and remains authoritative.
+    """
+    out = ds.copy(deep=False)
+    for name in out.data_vars:
+        da = out[name]
+        if "coordinate_system_info" in da.attrs:
+            attrs = dict(da.attrs)
+            attrs.pop("coordinate_system_info", None)
+            da = da.copy(deep=False)
+            da.attrs = attrs
+            out[name] = da
+    return out
 
 
 def _flatten_group_var_names(value) -> list[str]:
@@ -782,6 +858,56 @@ def _add_original_world_coords(
     return obj
 
 
+def _add_original_world_coords_to_output(
+    obj: xr.Dataset | xr.DataArray,
+    *,
+    dim_a: str,
+    dim_b: str,
+    output_wcs: WCS,
+    output_frame: str,
+    original_frame: str,
+) -> xr.Dataset | xr.DataArray:
+    """Add original-frame world coordinates to output pixels.
+
+    Parameters
+    ----------
+    obj
+        Output object that may receive `original_*` coordinate arrays.
+    dim_a
+        First spatial dimension name.
+    dim_b
+        Second spatial dimension name.
+    output_wcs
+        WCS describing the output pixel-to-world mapping.
+    output_frame
+        Frame represented by canonical output world coordinates.
+    original_frame
+        Original/source frame to be added under `original_*` names.
+
+    Returns
+    -------
+    xr.Dataset | xr.DataArray
+        Object with canonical output-frame world coordinates ensured and
+        `original_*` coordinates added.
+    """
+    out_lon_name, out_lat_name = _world_coord_names_for_frame(output_frame)
+    if out_lon_name not in obj.coords or out_lat_name not in obj.coords:
+        obj = _replace_world_coords(
+            obj,
+            wcs=output_wcs,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            frame=output_frame,
+        )
+    return _add_original_world_coords(
+        obj,
+        dim_a=dim_a,
+        dim_b=dim_b,
+        from_frame=output_frame,
+        to_frame=original_frame,
+    )
+
+
 def _resolve_data_group_vars(ds: xr.Dataset, data_group: str) -> list[str]:
     """Resolve and validate variable names declared for a Dataset data group.
 
@@ -916,6 +1042,7 @@ def _reproject_dataset_group_to_match(
     dim_a: str,
     dim_b: str,
     method: str | int,
+    include_original_world_coords: bool,
 ) -> xr.Dataset:
     """Reproject all selected variables in a source Dataset data group.
 
@@ -939,13 +1066,16 @@ def _reproject_dataset_group_to_match(
         `"exact"`, `"adaptive"`, interpolation names
         (`"nearest-neighbor"`, `"bilinear"`, `"biquadratic"`, `"bicubic"`),
         or interpolation integer IDs (`0`, `1`, `2`, `3`).
+    include_original_world_coords
+        If `True`, add transformed `original_*` coordinate arrays on output
+        pixels for the source frame.
     Returns
     -------
     xr.Dataset
         Dataset containing reprojected variables from `data_vars`, with metadata
         copied from `target` when it is a Dataset, otherwise from `source`.
     """
-    src_ref = source[data_vars[0]]
+    src_ref = _with_dataset_csi_if_missing(source, source[data_vars[0]])
     tgt_ref = _get_target_grid_dataarray(
         target, data_var=data_vars[0], dim_a=dim_a, dim_b=dim_b
     )
@@ -955,8 +1085,9 @@ def _reproject_dataset_group_to_match(
 
     out_ds = target.copy(deep=False) if isinstance(target, xr.Dataset) else xr.Dataset()
     for var in data_vars:
+        src_var = _with_dataset_csi_if_missing(source, source[var])
         out_ds[var] = _reproject_dataarray(
-            source[var],
+            src_var,
             src_wcs.wcs,
             tgt_wcs.wcs,
             tgt_wcs.coord_a,
@@ -974,6 +1105,17 @@ def _reproject_dataset_group_to_match(
     # Preserve source group definitions for downstream selection logic.
     if "data_groups" in source.attrs:
         out_ds.attrs["data_groups"] = source.attrs["data_groups"]
+    if include_original_world_coords:
+        tgt_frame = _reference_frame_from_xradio(tgt_ref)
+        src_frame = _reference_frame_from_xradio(src_ref)
+        out_ds = _add_original_world_coords_to_output(
+            out_ds,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            output_wcs=tgt_wcs.wcs,
+            output_frame=tgt_frame,
+            original_frame=src_frame,
+        )
     return out_ds
 
 
@@ -1022,31 +1164,15 @@ def _reproject_dataset_group_to_frame(
         frame-consistent world coordinates, updated frame metadata, and beam-PA
         updates when beam metadata variables are present.
     """
-    src_ref = source[data_vars[0]]
+    src_ref = _with_dataset_csi_if_missing(source, source[data_vars[0]])
     src_wcs = build_wcs_from_xradio(src_ref, dim_a=dim_a, dim_b=dim_b)
-    ref_dir = _transform_reference_direction(src_ref, frame)
-
-    if keep_grid:
-        tgt_wcs = build_wcs_from_xradio(
-            src_ref,
-            dim_a=dim_a,
-            dim_b=dim_b,
-            frame_override=frame,
-            ref_dir_override=ref_dir,
-        )
-    else:
-        coord_a, coord_b = _coords_for_same_pixel_size(
-            src_ref, dim_a=dim_a, dim_b=dim_b
-        )
-        tgt_wcs = build_wcs_from_xradio(
-            src_ref,
-            dim_a=dim_a,
-            dim_b=dim_b,
-            frame_override=frame,
-            ref_dir_override=ref_dir,
-            coord_a=coord_a,
-            coord_b=coord_b,
-        )
+    ref_dir, tgt_wcs = _build_target_wcs_for_frame_reprojection(
+        src_ref,
+        frame=frame,
+        keep_grid=keep_grid,
+        dim_a=dim_a,
+        dim_b=dim_b,
+    )
 
     out_ds = source.copy(deep=False)
     dim_coord_updates = {
@@ -1062,8 +1188,9 @@ def _reproject_dataset_group_to_frame(
         out_ds = out_ds.drop_vars(stale_world_aliases)
 
     for var in data_vars:
+        src_var = _with_dataset_csi_if_missing(source, source[var])
         out_var = _reproject_dataarray(
-            source[var],
+            src_var,
             src_wcs.wcs,
             tgt_wcs.wcs,
             tgt_wcs.coord_a,
@@ -1093,15 +1220,71 @@ def _reproject_dataset_group_to_frame(
     )
     if include_original_world_coords:
         src_frame = _reference_frame_from_xradio(src_ref)
-        out_ds = _add_original_world_coords(
+        out_ds = _add_original_world_coords_to_output(
             out_ds,
             dim_a=dim_a,
             dim_b=dim_b,
-            from_frame=frame,
-            to_frame=src_frame,
+            output_wcs=tgt_wcs.wcs,
+            output_frame=frame,
+            original_frame=src_frame,
         )
     out_ds = _rotate_beam_pas_for_frame_change(source, out_ds, frame=frame)
     return out_ds
+
+
+def _build_target_wcs_for_frame_reprojection(
+    src: xr.DataArray,
+    *,
+    frame: str,
+    keep_grid: bool,
+    dim_a: str,
+    dim_b: str,
+) -> tuple[np.ndarray, _WCSBuildResult]:
+    """Build target frame WCS and transformed reference direction for output.
+
+    Parameters
+    ----------
+    src
+        Source image data array used to derive input sampling and metadata.
+    frame
+        Target sky frame name.
+    keep_grid
+        If `True`, reuse source pixel-coordinate arrays; if `False`, construct
+        a same-sized centered coordinate lattice with unchanged pixel spacing.
+    dim_a
+        First spatial dimension name.
+    dim_b
+        Second spatial dimension name.
+
+    Returns
+    -------
+    tuple[np.ndarray, _WCSBuildResult]
+        Pair `(ref_dir, tgt_wcs)` where:
+        - `ref_dir` is transformed target-frame reference direction `[lon, lat]`
+          in radians,
+        - `tgt_wcs` contains the output WCS and effective output coordinates.
+    """
+    ref_dir = _transform_reference_direction(src, frame)
+    if keep_grid:
+        tgt_wcs = build_wcs_from_xradio(
+            src,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            frame_override=frame,
+            ref_dir_override=ref_dir,
+        )
+    else:
+        coord_a, coord_b = _coords_for_same_pixel_size(src, dim_a=dim_a, dim_b=dim_b)
+        tgt_wcs = build_wcs_from_xradio(
+            src,
+            dim_a=dim_a,
+            dim_b=dim_b,
+            frame_override=frame,
+            ref_dir_override=ref_dir,
+            coord_a=coord_a,
+            coord_b=coord_b,
+        )
+    return ref_dir, tgt_wcs
 
 
 def _get_target_grid_dataarray(
@@ -1143,7 +1326,7 @@ def _get_target_grid_dataarray(
         return obj
 
     if data_var in obj.data_vars:
-        return obj[data_var]
+        return _with_dataset_csi_if_missing(obj, obj[data_var])
 
     # Allow a target Dataset that only carries grid coordinates + WCS metadata.
     if dim_a not in obj.coords or dim_b not in obj.coords:
