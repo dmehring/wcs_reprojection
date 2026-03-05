@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import xarray as xr
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 from xradio.image import make_empty_sky_image
 
 from wcs_reproject import reproject_to_match
@@ -80,3 +82,150 @@ def test_reproject_to_match_falls_back_to_data_var_when_group_unresolvable() -> 
 
     assert "SKY" in out.data_vars
     assert out["SKY"].shape[-2:] == tgt["SKY"].shape[-2:]
+
+
+def test_reproject_to_match_include_original_world_coords_transform_consistent() -> (
+    None
+):
+    """Original-frame coords should be added and match Astropy frame transforms."""
+    src = _make_dataset()
+
+    # Build a Galactic template grid so output canonical coords are Galactic.
+    cell = np.deg2rad(3.0 / 3600.0)
+    tgt = make_empty_sky_image(
+        phase_center=[0.0, 0.0],
+        image_size=[72, 60],
+        cell_size=[cell, cell],
+        frequency_coords=np.array([1.4e9]),
+        pol_coords=["I"],
+        time_coords=np.array([59000.0]),
+        direction_reference="galactic",
+        projection="SIN",
+        spectral_reference="lsrk",
+        do_sky_coords=True,
+    )
+
+    out = reproject_to_match(
+        src,
+        tgt,
+        data_var="SKY",
+        method="bilinear",
+        include_original_world_coords=True,
+    )
+
+    assert "galactic_longitude" in out.coords
+    assert "galactic_latitude" in out.coords
+    assert "original_right_ascension" in out.coords
+    assert "original_declination" in out.coords
+
+    glon = out["galactic_longitude"].values
+    glat = out["galactic_latitude"].values
+    ora = out["original_right_ascension"].values
+    odec = out["original_declination"].values
+
+    back = SkyCoord(glon.ravel() * u.rad, glat.ravel() * u.rad, frame="galactic")
+    back_fk5 = back.transform_to("fk5")
+    exp_ra = back_fk5.spherical.lon.to_value(u.rad).reshape(glon.shape)
+    exp_dec = back_fk5.spherical.lat.to_value(u.rad).reshape(glat.shape)
+
+    dra = np.arctan2(np.sin(ora - exp_ra), np.cos(ora - exp_ra))
+    ddec = odec - exp_dec
+    max_dra_arcsec = float(np.nanmax(np.abs(np.rad2deg(dra) * 3600.0)))
+    max_ddec_arcsec = float(np.nanmax(np.abs(np.rad2deg(ddec) * 3600.0)))
+
+    assert max_dra_arcsec < 0.05
+    assert max_ddec_arcsec < 0.05
+
+
+def test_reproject_to_match_uses_dataset_level_csi_when_sky_lacks_csi() -> None:
+    """Dataset-level CSI should drive WCS when SKY attrs omit CSI metadata."""
+    src = _make_dataset()
+    tgt = _make_dataset(n_l=72, n_m=60, cell_arcsec=3.0)
+
+    # Enforce schema-style metadata placement: Dataset-level only.
+    src["SKY"].attrs.pop("coordinate_system_info", None)
+    tgt["SKY"].attrs.pop("coordinate_system_info", None)
+    assert "coordinate_system_info" in src.attrs
+    assert "coordinate_system_info" in tgt.attrs
+
+    out = reproject_to_match(src, tgt, data_var="SKY", method="bilinear")
+
+    assert out["SKY"].shape[-2:] == tgt["SKY"].shape[-2:]
+    np.testing.assert_allclose(
+        out["right_ascension"].values,
+        tgt["right_ascension"].values,
+        rtol=0.0,
+        atol=0.0,
+    )
+    np.testing.assert_allclose(
+        out["declination"].values,
+        tgt["declination"].values,
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_reproject_to_match_dataset_output_has_no_variable_level_csi() -> None:
+    """Dataset outputs should keep CSI at Dataset level, not per data variable."""
+    src = _make_dataset()
+    tgt = _make_dataset(n_l=72, n_m=60, cell_arcsec=3.0)
+
+    out = reproject_to_match(src, tgt, data_var="SKY", method="bilinear")
+
+    assert "coordinate_system_info" in out.attrs
+    assert "coordinate_system_info" not in out["SKY"].attrs
+
+
+def test_reproject_to_match_group_mode_adds_original_world_coords() -> None:
+    """Group mode should also add transform-consistent `original_*` coords."""
+    src = _make_dataset()
+    src["MODEL"] = src["SKY"] * 2.0
+    src.attrs["data_groups"] = {"base": ["SKY", "MODEL"]}
+
+    cell = np.deg2rad(3.0 / 3600.0)
+    tgt = make_empty_sky_image(
+        phase_center=[0.0, 0.0],
+        image_size=[72, 60],
+        cell_size=[cell, cell],
+        frequency_coords=np.array([1.4e9]),
+        pol_coords=["I"],
+        time_coords=np.array([59000.0]),
+        direction_reference="galactic",
+        projection="SIN",
+        spectral_reference="lsrk",
+        do_sky_coords=True,
+    )
+
+    out = reproject_to_match(
+        src,
+        tgt,
+        data_group="base",
+        data_var="SKY",
+        method="bilinear",
+        include_original_world_coords=True,
+    )
+
+    assert "SKY" in out.data_vars
+    assert "MODEL" in out.data_vars
+    assert "galactic_longitude" in out.coords
+    assert "galactic_latitude" in out.coords
+    assert "original_right_ascension" in out.coords
+    assert "original_declination" in out.coords
+
+    glon = out["galactic_longitude"].values
+    glat = out["galactic_latitude"].values
+    ora = out["original_right_ascension"].values
+    odec = out["original_declination"].values
+
+    back = SkyCoord(glon.ravel() * u.rad, glat.ravel() * u.rad, frame="galactic")
+    back_fk5 = back.transform_to("fk5")
+    exp_ra = back_fk5.spherical.lon.to_value(u.rad).reshape(glon.shape)
+    exp_dec = back_fk5.spherical.lat.to_value(u.rad).reshape(glat.shape)
+
+    dra = np.arctan2(np.sin(ora - exp_ra), np.cos(ora - exp_ra))
+    ddec = odec - exp_dec
+    max_dra_arcsec = float(np.nanmax(np.abs(np.rad2deg(dra) * 3600.0)))
+    max_ddec_arcsec = float(np.nanmax(np.abs(np.rad2deg(ddec) * 3600.0)))
+
+    assert max_dra_arcsec < 0.05
+    assert max_ddec_arcsec < 0.05
